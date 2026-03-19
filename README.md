@@ -19,6 +19,10 @@ Runs on **Telegram, WhatsApp, Discord, iMessage, CLI**, and **MCP**.
 
 ---
 
+![PEPAGI UI](docs/screenshot-ui.png)
+
+---
+
 ## What is PEPAGI?
 
 PEPAGI is an autonomous AI agent orchestrator that acts as a "brain" coordinating multiple AI models. Instead of relying on a single LLM, it intelligently routes tasks to the most suitable model based on difficulty, cost, and capability — then verifies the results using metacognition, world-model simulation, and cross-model verification.
