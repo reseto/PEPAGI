@@ -409,5 +409,5 @@ MIT License. See [LICENSE](LICENSE) for details.
 ---
 
 <p align="center">
-  Built by <strong>Josef Taric - Promptlab</strong>
+  Built by <strong>Josef Taric - Promptlab37</strong> & <strong>TN000</strong>
 </p>
