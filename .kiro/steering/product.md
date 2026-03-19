@@ -21,3 +21,14 @@ Telegram, Discord, WhatsApp (optional), iMessage (macOS), CLI with TUI dashboard
 ## Data Storage
 
 All persistent data lives in `~/.pepagi/` (configurable via `PEPAGI_DATA_DIR`): config, tasks, goals, memory (episodes, knowledge, procedures, reflections), skills, logs, causal chains, and audit trail.
+
+---
+
+## Steering File Maintenance Guide
+
+These steering files should only capture information that is NOT readily available from config files or directory listings. The principle:
+
+- **Do include:** product intent, architectural decisions, code conventions, non-obvious patterns, common commands
+- **Don't include:** dependency lists (read `package.json`), tsconfig details (read `tsconfig.json`), full file trees (use `ls`/`readCode`)
+
+When modifying the project setup (adding deps, changing build config, restructuring), you do NOT need to update steering to match — the source of truth is the config files themselves. Only update steering when conventions or architectural intent changes.
