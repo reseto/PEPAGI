@@ -33,16 +33,17 @@ Add Kiro CLI as a new LLM provider to PEPAGI using the Agent Client Protocol (AC
     - **Property 8: Config Schema Validation Round-Trip**
     - **Validates: Requirements 7.1, 7.2**
 
-- [ ] 3. Build ACP subprocess simulator (Layer 1 testing infrastructure)
-  - [ ] 3.1 Create `src/agents/__tests__/acp-simulator.ts`
+- [x] 3. Build ACP subprocess simulator (Layer 1 testing infrastructure)
+  - [x] 3.1 Create `src/agents/__tests__/acp-simulator.ts`
     - Standalone TypeScript script that reads JSON-RPC 2.0 from stdin and writes ACP responses to stdout
     - Scenario-driven via ACP_SCENARIO env var
     - Implement all 11 scenarios: happy-path, happy-no-usage, error-on-session-new, error-on-prompt, hang-on-initialize, crash-mid-stream, malformed-json, slow-chunks, partial-lines, sigterm-graceful, sigterm-ignore
-    - Read ACP_MODEL, ACP_AGENT, ACP_MCP_SERVERS env vars to validate spawn arguments
+    - Use `session/update` method with `params.update.sessionUpdate` discriminator for all streaming events (agent_message_chunk, tool_call, usage_update). No TurnEnd notification — turn completion via prompt response with `stopReason: "end_turn"`. Prompt params use content blocks array. session/new includes `cwd`. Model selection via `--model` CLI flag (no session/set_model method).
+    - Read ACP_AGENT, ACP_MCP_SERVERS env vars to validate spawn arguments
     - Must be compilable to JS and spawnable via `node`
     - _Requirements: 2.1, 2.2, 3.1, 3.2, 4.1, 4.2, 4.3, 4.4_
 
-- [ ] 4. Checkpoint — Verify simulator compiles and types/config are correct
+- [x] 4. Checkpoint — Verify simulator compiles and types/config are correct
   - Ensure `npm run build` succeeds with the new types, config schema, and simulator
   - Ensure all existing tests still pass (`npm test`)
   - Ask the user if questions arise.
@@ -54,8 +55,8 @@ Add Kiro CLI as a new LLM provider to PEPAGI using the Agent Client Protocol (AC
     - Export singleton `kiroCircuitBreaker`
     - _Requirements: 9.1, 9.2, 9.3, 16.1, 16.2, 16.3_
   - [ ] 5.2 Add ACP JSON-RPC helper functions
-    - `acpRequest(id, method, params)` — builds JSON-RPC 2.0 request string
-    - `ACPMessage` interface for parsing responses/notifications
+    - `acpRequest(id, method, params)` — builds JSON-RPC 2.0 request string (with protocolVersion: 1 for initialize)
+    - `ACPMessage` interface for parsing responses/notifications (session/update with update.sessionUpdate discriminator)
     - _Requirements: 2.2, 3.1, 3.2_
   - [ ]* 5.3 Write property test for circuit breaker state machine
     - **Property 11: Circuit Breaker State Machine**
@@ -66,9 +67,9 @@ Add Kiro CLI as a new LLM provider to PEPAGI using the Agent Client Protocol (AC
 
 - [ ] 6. Implement callKiro() core provider function
   - [ ] 6.1 Implement callKiro() in `src/agents/llm-provider.ts`
-    - Spawn `kiro-cli acp` subprocess with stdio pipes
-    - Perform ACP handshake: initialize → session/new → (optional session/set_model) → session/set_mode → session/prompt
-    - Parse streaming JSONL notifications: AgentMessageChunk, ToolCall, usage_update, TurnEnd
+    - Spawn `kiro-cli acp` subprocess with stdio pipes (with `--model <model>` when model != "auto")
+    - Perform ACP handshake: initialize (protocolVersion: 1) → session/new (with cwd) → (optional session/set_mode based on available modes) → session/prompt (content blocks array)
+    - Parse streaming `session/update` notifications: agent_message_chunk (text at update.content.text), tool_call, usage_update. Turn completion via prompt response with stopReason (no TurnEnd notification). Silently ignore `_kiro.dev/*` extension notifications.
     - Accumulate text content, track tool calls, extract usage data
     - Handle subprocess errors (ENOENT, non-zero exit, stderr)
     - Support AbortController (SIGTERM → SIGKILL escalation after 5s)
@@ -126,9 +127,9 @@ Add Kiro CLI as a new LLM provider to PEPAGI using the Agent Client Protocol (AC
     - _Requirements: 2.1–2.5, 3.1–3.5, 4.1–4.5, 5.1–5.6, 6.1, 6.2, 9.1–9.3, 10.1–10.3, 11.1–11.3, 14.1–14.4_
   - [ ]* 9.2 Write property test: ACP Protocol Message Ordering
     - **Property 1: ACP Protocol Message Ordering**
-    - Spawn simulator, capture stdin writes, verify sequence: initialize → session/new → (optional set_model) → session/set_mode → session/prompt
+    - Spawn simulator, capture stdin writes, verify sequence: initialize → session/new (with cwd) → (optional set_mode based on available modes) → session/prompt (content blocks). No session/set_model — model via --model CLI flag.
     - Use fast-check to generate random LLMCallOptions + KiroAgentConfig (model: "auto" vs specific)
-    - **Validates: Requirements 2.2, 3.1, 3.2, 3.5**
+    - **Validates: Requirements 2.1, 2.2, 3.1, 3.2**
   - [ ]* 9.3 Write property test: Prompt Construction Completeness
     - **Property 3: Prompt Construction Completeness**
     - Verify prompt sent to simulator contains full systemPrompt and all message contents
@@ -152,12 +153,12 @@ Add Kiro CLI as a new LLM provider to PEPAGI using the Agent Client Protocol (AC
     - **Validates: Requirements 5.3, 5.4, 14.4**
   - [ ]* 9.8 Write property test: Spawn Arguments from Agent Config
     - **Property 12: Spawn Arguments from Config**
-    - Generate random agent name strings (empty and non-empty), verify spawn args via simulator env capture
-    - **Validates: Requirements 12.1, 12.2**
+    - Generate random agent name strings (empty and non-empty) and model strings ("auto" vs specific), verify spawn args include --agent and --model flags via simulator env capture
+    - **Validates: Requirements 2.1, 12.1, 12.2**
   - [ ]* 9.9 Write property test: Session Mode Mapping
     - **Property 13: Session Mode Mapping**
-    - Generate random boolean agenticMode values, verify mode string via simulator stdin capture
-    - **Validates: Requirements 13.1, 13.2**
+    - Generate random boolean agenticMode values and random available modes arrays, verify modeId selection from available modes via simulator stdin capture
+    - **Validates: Requirements 13.1, 13.2, 13.3**
   - [ ]* 9.10 Write property test: MCP Server Forwarding
     - **Property 15: MCP Server Forwarding**
     - Generate random MCP server config arrays, verify session/new params via simulator stdin capture
@@ -167,7 +168,7 @@ Add Kiro CLI as a new LLM provider to PEPAGI using the Agent Client Protocol (AC
   - [ ]* 10.1 Add integration smoke test in `src/agents/__tests__/kiro-provider.test.ts`
     - Gated behind `KIRO_CLI_AVAILABLE=true` env var using `describe.skipIf`
     - Spawn actual `kiro-cli acp`, send trivial prompt in read-only mode
-    - Verify: initialize response received, session created, TurnEnd received, LLMResponse has non-empty content
+    - Verify: initialize response received, session created, prompt response with stopReason received, LLMResponse has non-empty content
     - _Requirements: 2.1, 2.2, 3.1, 3.2, 4.4, 5.1_
 
 - [ ] 11. Final checkpoint — Ensure all tests pass

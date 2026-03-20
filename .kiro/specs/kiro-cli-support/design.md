@@ -5,9 +5,9 @@
 This design adds Kiro CLI as a new LLM provider to PEPAGI, following the same patterns used by the existing Claude, GPT, Gemini, Ollama, and LM Studio providers. Kiro CLI communicates via the Agent Client Protocol (ACP) — a JSON-RPC 2.0 protocol over stdin/stdout — rather than REST APIs or SDK calls.
 
 The core integration point is a new `callKiro()` function in `src/agents/llm-provider.ts` that:
-1. Spawns `kiro-cli acp` as a subprocess
-2. Performs the ACP handshake (initialize → session/new → session/set_model → session/set_mode → session/prompt)
-3. Parses streaming session notifications (AgentMessageChunk, ToolCall, TurnEnd, usage_update)
+1. Spawns `kiro-cli acp` as a subprocess (with `--model <model>` when model != "auto")
+2. Performs the ACP handshake (initialize → session/new → optional session/set_mode → session/prompt)
+3. Parses streaming `session/update` notifications (agent_message_chunk, tool_call, usage_update) and the final `session/prompt` response (with `stopReason`)
 4. Returns a standard `LLMResponse`
 
 Kiro is unique among providers because it manages its own authentication and model parameters internally. The PEPAGI config uses a dedicated schema (no apiKey, temperature, maxOutputTokens) and treats Kiro as a zero-cost local provider for difficulty routing purposes.
@@ -20,7 +20,7 @@ Kiro is unique among providers because it manages its own authentication and mod
 
 3. **Dedicated config schema**: Kiro's config omits `apiKey`, `temperature`, `maxOutputTokens`, and `maxAgenticTurns` since Kiro CLI handles these internally. Only `enabled`, `model`, `agent`, `timeout`, and `forwardMcpServers` are exposed.
 
-4. **Session mode mapping**: `agenticMode: true` maps to ACP `"full-access"` mode; `agenticMode: false` maps to `"read-only"` mode. This prevents unnecessary tool usage on simple text-only calls.
+4. **Session mode mapping**: Modes are agent-specific (e.g., `"kiro_default"`, `"kiro_planner"`, `"rob"`) and returned in the `session/new` response under `modes.availableModes`. The `session/set_mode` method takes `sessionId` and `modeId`. For `agenticMode: true`, select a mode containing "default" or matching the agent name; for `agenticMode: false`, select a mode containing "planner" or "readonly" if available, otherwise skip `set_mode` and use the default.
 
 5. **Graceful usage fallback**: If the ACP response includes `usage` data (per the ACP usage_update RFD), use it. Otherwise, fall back to character-based estimation (chars/4) with zero cost.
 
@@ -47,17 +47,16 @@ graph TB
 
     subgraph Kiro Provider
         CK --> KCB[KiroCircuitBreaker]
-        KCB --> SP[spawn kiro-cli acp]
+        KCB --> SP[spawn kiro-cli acp --model]
         SP -->|stdin JSON-RPC| INIT[initialize]
-        INIT --> SN[session/new]
-        SN --> SM[session/set_model]
-        SM --> SMO[session/set_mode]
-        SMO --> PROMPT[session/prompt]
-        SP -->|stdout JSONL| PARSE[Parse Notifications]
-        PARSE --> AMC[AgentMessageChunk]
-        PARSE --> TC[ToolCall]
+        INIT --> SN[session/new + cwd]
+        SN --> SMO[session/set_mode optional]
+        SMO --> PROMPT[session/prompt content blocks]
+        SP -->|stdout JSONL| PARSE[Parse session/update]
+        PARSE --> AMC[agent_message_chunk]
+        PARSE --> TC[tool_call]
         PARSE --> UU[usage_update]
-        PARSE --> TE[TurnEnd]
+        PARSE --> PR[PromptResponse + stopReason]
     end
 
     subgraph Event Bus
@@ -79,31 +78,27 @@ sequenceDiagram
     participant P as callKiro()
     participant K as kiro-cli acp
 
-    P->>K: spawn subprocess (stdin/stdout pipes)
-    P->>K: {"jsonrpc":"2.0","method":"initialize","id":1,"params":{...}}
-    K-->>P: {"jsonrpc":"2.0","id":1,"result":{...}}
+    P->>K: spawn subprocess (stdin/stdout pipes, --model flag if model != "auto")
+    P->>K: {"jsonrpc":"2.0","method":"initialize","id":1,"params":{"protocolVersion":1,...}}
+    K-->>P: {"jsonrpc":"2.0","id":1,"result":{"agentInfo":{...},"modes":{...}}}
 
-    P->>K: {"jsonrpc":"2.0","method":"session/new","id":2,"params":{"mcpServers":[...]}}
-    K-->>P: {"jsonrpc":"2.0","id":2,"result":{"sessionId":"..."}}
+    P->>K: {"jsonrpc":"2.0","method":"session/new","id":2,"params":{"cwd":"/abs/path","mcpServers":[...]}}
+    K-->>P: {"jsonrpc":"2.0","id":2,"result":{"sessionId":"...","modes":{"availableModes":[...],"currentModeId":"..."}}}
 
-    opt model != "auto"
-        P->>K: {"jsonrpc":"2.0","method":"session/set_model","id":3,"params":{"model":"..."}}
+    opt agenticMode mapping to available mode
+        P->>K: {"jsonrpc":"2.0","method":"session/set_mode","id":3,"params":{"sessionId":"...","modeId":"..."}}
         K-->>P: {"jsonrpc":"2.0","id":3,"result":{}}
     end
 
-    P->>K: {"jsonrpc":"2.0","method":"session/set_mode","id":4,"params":{"mode":"full-access"}}
-    K-->>P: {"jsonrpc":"2.0","id":4,"result":{}}
+    P->>K: {"jsonrpc":"2.0","method":"session/prompt","id":4,"params":{"sessionId":"...","prompt":[{"type":"text","text":"..."}]}}
 
-    P->>K: {"jsonrpc":"2.0","method":"session/prompt","id":5,"params":{"prompt":"..."}}
-
-    loop Streaming Notifications
-        K-->>P: {"jsonrpc":"2.0","method":"session/notification","params":{"type":"AgentMessageChunk",...}}
-        K-->>P: {"jsonrpc":"2.0","method":"session/notification","params":{"type":"ToolCall",...}}
-        K-->>P: {"jsonrpc":"2.0","method":"session/update","params":{"sessionUpdate":"usage_update",...}}
+    loop Streaming session/update notifications
+        K-->>P: {"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"text":"..."}}}}
+        K-->>P: {"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"tool_call","name":"...","input":{...}}}}
+        K-->>P: {"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"usage_update","contextWindow":{...},"cost":{...}}}}
     end
 
-    K-->>P: {"jsonrpc":"2.0","method":"session/notification","params":{"type":"TurnEnd",...}}
-    K-->>P: {"jsonrpc":"2.0","id":5,"result":{"usage":{...}}}
+    K-->>P: {"jsonrpc":"2.0","id":4,"result":{"stopReason":"end_turn","usage":{...}}}
 
     P->>K: kill subprocess
 ```
@@ -223,16 +218,15 @@ async function callKiro(opts: LLMCallOptions, kiroConfig: KiroAgentConfig): Prom
 
 Internal flow:
 1. Circuit breaker guard (`kiroCircuitBreaker.call(...)`)
-2. Spawn `kiro-cli acp` (with optional `--agent <name>`)
+2. Spawn `kiro-cli acp` (with optional `--agent <name>` and `--model <model>` if model != "auto")
 3. Set up line-buffered JSONL parser on stdout
-4. Send `initialize` request (10s timeout)
-5. Send `session/new` request (with `mcpServers` from config)
-6. Conditionally send `session/set_model` (if model != "auto")
-7. Send `session/set_mode` ("full-access" or "read-only")
-8. Send `session/prompt` with constructed prompt
-9. Parse notifications: accumulate text, emit events, track usage
-10. On TurnEnd or prompt response: assemble LLMResponse
-11. Kill subprocess, clean up listeners
+4. Send `initialize` request with `protocolVersion: 1` (10s timeout)
+5. Send `session/new` request (with `cwd` as absolute path and `mcpServers` from config)
+6. Optionally send `session/set_mode` (with `sessionId` + `modeId` selected from `session/new` response `modes.availableModes` based on `agenticMode` flag)
+7. Send `session/prompt` with prompt as array of content blocks (`[{type: "text", text: "..."}]`)
+8. Parse `session/update` notifications: accumulate text from `agent_message_chunk` (at `update.content.text`), emit events for `tool_call`, track usage from `usage_update`. Silently ignore `_kiro.dev/*` extension notifications.
+9. On `session/prompt` response (matching request id, with `stopReason`): assemble LLMResponse
+10. Kill subprocess, clean up listeners
 
 ### 6. Health Check (`src/agents/llm-provider.ts`)
 
@@ -311,34 +305,29 @@ interface JsonRpcNotification extends JsonRpcMessage {
 }
 ```
 
-### ACP Session Notification Types
+### ACP Session Update Types (via `session/update` method)
 
 ```typescript
-/** AgentMessageChunk — streaming text content */
-interface ACPAgentMessageChunk {
-  type: "AgentMessageChunk";
-  text: string;
-}
+/** All streaming events use method "session/update" with params.update.sessionUpdate as discriminator */
 
-/** ToolCall — agent invoked a tool */
-interface ACPToolCall {
-  type: "ToolCall";
-  name: string;
-  input: Record<string, unknown>;
-  id?: string;
-}
+/** agent_message_chunk — streaming text content */
+// method: "session/update"
+// params.update.sessionUpdate: "agent_message_chunk"
+// params.update.content.text: string
 
-/** ToolCallUpdate — tool execution progress */
-interface ACPToolCallUpdate {
-  type: "ToolCallUpdate";
-  toolCallId: string;
-  content: string;
-}
+/** tool_call — agent invoked a tool */
+// method: "session/update"
+// params.update.sessionUpdate: "tool_call"
+// params.update.name: string
+// params.update.input: Record<string, unknown>
 
-/** TurnEnd — session turn completed */
-interface ACPTurnEnd {
-  type: "TurnEnd";
-}
+/** tool_call_update — tool execution progress */
+// method: "session/update"
+// params.update.sessionUpdate: "tool_call_update"
+// params.update.toolCallId: string
+// params.update.content: string
+
+/** Turn completion is signaled by the session/prompt response arriving with stopReason — no TurnEnd notification */
 ```
 
 ### ACP Usage Update (from RFD)
@@ -394,9 +383,9 @@ interface KiroAgentConfig {
 
 ### Property 1: ACP Protocol Message Ordering
 
-*For any* `callKiro` invocation with any valid `LLMCallOptions` and `KiroAgentConfig`, the sequence of JSON-RPC requests written to the subprocess stdin SHALL always follow the order: `initialize` → `session/new` → (optionally `session/set_model` if model ≠ "auto") → `session/set_mode` → `session/prompt`. No request may be sent out of this order, and no request may be skipped (except `session/set_model` when model is "auto").
+*For any* `callKiro` invocation with any valid `LLMCallOptions` and `KiroAgentConfig`, the sequence of JSON-RPC requests written to the subprocess stdin SHALL always follow the order: `initialize` → `session/new` (with `cwd`) → (optionally `session/set_mode` based on available modes) → `session/prompt` (with content blocks array). Model selection is via `--model` CLI flag at spawn time, not via a `session/set_model` request.
 
-**Validates: Requirements 2.2, 3.1, 3.2, 3.5**
+**Validates: Requirements 2.1, 2.2, 3.1, 3.2**
 
 ### Property 2: Subprocess Cleanup Invariant
 
@@ -418,13 +407,13 @@ interface KiroAgentConfig {
 
 ### Property 5: AgentMessageChunk Accumulation
 
-*For any* sequence of `AgentMessageChunk` notifications followed by a `TurnEnd` notification, the `LLMResponse.content` field SHALL equal the concatenation of all `text` fields from the `AgentMessageChunk` notifications in order.
+*For any* sequence of `session/update` notifications with `sessionUpdate: "agent_message_chunk"` followed by a `session/prompt` response with `stopReason`, the `LLMResponse.content` field SHALL equal the concatenation of all `update.content.text` fields from the notifications in order.
 
 **Validates: Requirements 4.2, 4.4, 5.1**
 
 ### Property 6: ToolCall Notification Mapping
 
-*For any* sequence of `ToolCall` notifications received during a session, the `LLMResponse.toolCalls` array SHALL contain one entry per `ToolCall` notification, with matching `name` and `input` fields.
+*For any* sequence of `session/update` notifications with `sessionUpdate: "tool_call"` received during a session, the `LLMResponse.toolCalls` array SHALL contain one entry per notification, with matching `name` and `input` fields.
 
 **Validates: Requirements 4.3, 5.2**
 
@@ -460,15 +449,15 @@ interface KiroAgentConfig {
 
 ### Property 12: Spawn Arguments from Agent Config
 
-*For any* `KiroAgentConfig` with a non-empty `agent` string, the subprocess SHALL be spawned with arguments `["acp", "--agent", agent]`. *For any* config with an empty or absent `agent` string, the subprocess SHALL be spawned with arguments `["acp"]` only.
+*For any* `KiroAgentConfig` with a non-empty `agent` string, the subprocess SHALL be spawned with arguments `["acp", "--agent", agent]`. *For any* config with an empty or absent `agent` string, the subprocess SHALL be spawned with arguments `["acp"]` only. Additionally, when `model` is not `"auto"`, the spawn arguments SHALL include `["--model", model]`.
 
-**Validates: Requirements 12.1, 12.2**
+**Validates: Requirements 2.1, 12.1, 12.2**
 
 ### Property 13: Session Mode Mapping
 
-*For any* `LLMCallOptions` where `agenticMode` is `true`, the `session/set_mode` request SHALL contain `mode: "full-access"`. *For any* `LLMCallOptions` where `agenticMode` is `false` or absent, the `session/set_mode` request SHALL contain `mode: "read-only"`.
+*For any* `LLMCallOptions` where `agenticMode` is `true`, the `session/set_mode` request (if sent) SHALL contain a `modeId` selected from the `session/new` response `modes.availableModes` that best matches the agentic use case (e.g., containing "default" or matching the agent name). *For any* `LLMCallOptions` where `agenticMode` is `false` or absent, the provider SHALL select a mode containing "planner" or "readonly" if available, or skip `session/set_mode` entirely if no suitable mode exists.
 
-**Validates: Requirements 13.1, 13.2**
+**Validates: Requirements 13.1, 13.2, 13.3**
 
 ### Property 14: Usage and Cost Extraction from ACP Data
 
@@ -531,19 +520,19 @@ The simulator is scenario-driven via an environment variable `ACP_SCENARIO`:
 
 | Scenario | Behavior |
 |---|---|
-| `happy-path` | Responds to initialize, session/new, set_model, set_mode, session/prompt. Emits 3 AgentMessageChunk notifications, 1 ToolCall, 1 usage_update, then TurnEnd. Returns PromptResponse with usage field. |
+| `happy-path` | Responds to initialize, session/new, set_mode, session/prompt. Emits 3 `agent_message_chunk` updates, 1 `tool_call` update, 1 `usage_update`, then sends PromptResponse with `stopReason: "end_turn"` and usage field. |
 | `happy-no-usage` | Same as happy-path but omits usage field from PromptResponse and does not emit usage_update. Tests fallback estimation. |
 | `error-on-session-new` | Returns JSON-RPC error response to session/new request. |
 | `error-on-prompt` | Returns JSON-RPC error response to session/prompt request. |
 | `hang-on-initialize` | Accepts connection but never responds to initialize. Tests 10s timeout. |
-| `crash-mid-stream` | Emits 2 AgentMessageChunk notifications then exits with code 1. Tests subprocess crash recovery. |
-| `malformed-json` | Emits valid initialize response, then sends a line of garbage text before valid session notifications. Tests JSONL parser resilience. |
-| `slow-chunks` | Emits AgentMessageChunk notifications with 500ms delays between them. Tests streaming patience and abort handling. |
+| `crash-mid-stream` | Emits 2 `agent_message_chunk` updates then exits with code 1. Tests subprocess crash recovery. |
+| `malformed-json` | Emits valid initialize response, then sends a line of garbage text before valid session/update notifications. Tests JSONL parser resilience. |
+| `slow-chunks` | Emits `agent_message_chunk` updates with 500ms delays between them. Tests streaming patience and abort handling. |
 | `partial-lines` | Splits JSON-RPC messages across multiple write() calls (mid-line splits). Tests line buffer reassembly. |
-| `sigterm-graceful` | On SIGTERM, sends session/cancel acknowledgment then exits 0. Tests graceful shutdown. |
+| `sigterm-graceful` | On SIGTERM, sends prompt response with `stopReason` then exits 0. Tests graceful shutdown. |
 | `sigterm-ignore` | Ignores SIGTERM (tests SIGKILL escalation after 5s). |
 
-The simulator also reads `ACP_MODEL`, `ACP_AGENT`, and `ACP_MCP_SERVERS` env vars to validate that callKiro passes the correct spawn arguments and session/new parameters.
+The simulator also reads `ACP_AGENT` and `ACP_MCP_SERVERS` env vars to validate that callKiro passes the correct spawn arguments and session/new parameters. Model selection is validated via the `--model` CLI flag in spawn args (checked via `ACP_AGENT` env var pattern), not via a `session/set_model` request.
 
 Location: `src/agents/__tests__/acp-simulator.ts`
 Compiled to: `dist/agents/__tests__/acp-simulator.js` (spawned via `node`)
@@ -553,7 +542,7 @@ Compiled to: `dist/agents/__tests__/acp-simulator.js` (spawned via `node`)
 A single integration test gated behind the `KIRO_CLI_AVAILABLE=true` environment variable. When enabled, it spawns the actual `kiro-cli acp` binary, sends a trivial prompt in read-only mode, and verifies:
 - Initialize response is received
 - Session is created successfully
-- A TurnEnd notification is received
+- A TurnEnd / prompt response with `stopReason` is received
 - The returned LLMResponse has non-empty content
 
 This test does NOT run in CI by default — it requires Kiro CLI installed and authenticated on the developer's machine. It serves as the "does it actually work end-to-end" sanity check.
@@ -581,7 +570,7 @@ Properties to implement as PBT:
 
 | Property | Test Focus | Generator Strategy |
 |---|---|---|
-| P1: ACP Protocol Message Ordering | Capture stdin writes via simulator, verify sequence | Random LLMCallOptions + KiroAgentConfig (model: "auto" vs specific) |
+| P1: ACP Protocol Message Ordering | Capture stdin writes via simulator, verify sequence | Random LLMCallOptions + KiroAgentConfig (model: "auto" vs specific, --model flag) |
 | P3: Prompt Construction | Verify prompt contains all parts via simulator stdin capture | Random systemPrompt + random message arrays |
 | P4: JSONL Parsing Round-Trip | Serialize → parse → compare | Random JSON-RPC message objects |
 | P5: AgentMessageChunk Accumulation | Feed chunks via simulator, verify concatenation | Random arrays of text chunks |
@@ -590,7 +579,7 @@ Properties to implement as PBT:
 | P8: Config Schema Round-Trip | Serialize → parse → compare | Random KiroAgentConfig objects |
 | P11: Circuit Breaker State Machine | Sequence of success/failure, verify states | Random sequences of outcomes |
 | P12: Spawn Args from Config | Verify args array via simulator env capture | Random agent name strings (empty and non-empty) |
-| P13: Session Mode Mapping | Verify mode string via simulator stdin capture | Random boolean agenticMode values |
+| P13: Session Mode Mapping | Verify modeId selection from available modes via simulator | Random boolean agenticMode + random available modes arrays |
 | P15: MCP Server Forwarding | Verify session/new params via simulator stdin capture | Random MCP server config arrays |
 
 ### Unit Tests

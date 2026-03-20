@@ -2,12 +2,12 @@
 
 ## Introduction
 
-Add Kiro CLI as a new LLM provider for PEPAGI, alongside the existing Claude, GPT, Gemini, Ollama, and LM Studio providers. Kiro CLI implements the Agent Client Protocol (ACP) — an open standard for agent-editor communication over stdin/stdout using JSON-RPC 2.0. The Kiro_Provider will spawn `kiro-cli acp` as a subprocess, communicate via the ACP protocol (initialize → session/new → session/prompt), parse streaming session notifications (AgentMessageChunk, ToolCall, TurnEnd), and return results in the standard `LLMResponse` format. Kiro has built-in agentic tools, making it a natural fit for both text-only and agentic task execution within the PEPAGI multi-agent orchestration system.
+Add Kiro CLI as a new LLM provider for PEPAGI, alongside the existing Claude, GPT, Gemini, Ollama, and LM Studio providers. Kiro CLI implements the Agent Client Protocol (ACP) — an open standard for agent-editor communication over stdin/stdout using JSON-RPC 2.0. The Kiro_Provider will spawn `kiro-cli acp` as a subprocess, communicate via the ACP protocol (initialize → session/new → session/prompt), parse streaming `session/update` notifications (agent_message_chunk, tool_call, usage_update) and the final prompt response (with `stopReason`), and return results in the standard `LLMResponse` format. Kiro has built-in agentic tools, making it a natural fit for both text-only and agentic task execution within the PEPAGI multi-agent orchestration system.
 
 ## Glossary
 
 - **Kiro_Provider**: The provider function (`callKiro`) that spawns `kiro-cli acp` as a subprocess and communicates via the ACP JSON-RPC 2.0 protocol to execute LLM tasks, returning a standard `LLMResponse`.
-- **ACP**: Agent Client Protocol — an open standard for agent-editor communication over stdin/stdout using JSON-RPC 2.0 messages. Core methods: `initialize`, `session/new`, `session/prompt`, `session/cancel`, `session/set_mode`, `session/set_model`.
+- **ACP**: Agent Client Protocol — an open standard for agent-editor communication over stdin/stdout using JSON-RPC 2.0 messages. Core methods: `initialize`, `session/new`, `session/prompt`, `session/cancel`, `session/set_mode`.
 - **LLM_Provider**: The `LLMProvider` class that routes calls to provider-specific functions (callClaude, callGPT, callGemini, callOllama, callLMStudio, and now callKiro) based on `opts.provider`.
 - **LLMCallOptions**: The standard input interface for all provider calls, containing provider, model, systemPrompt, messages, agenticMode, taskId, abortController, timeoutMs, and other execution parameters.
 - **LLMResponse**: The standard output interface returned by all providers, containing content, toolCalls, usage (inputTokens, outputTokens), cost, model, and latencyMs.
@@ -17,8 +17,8 @@ Add Kiro CLI as a new LLM provider for PEPAGI, alongside the existing Claude, GP
 - **Circuit_Breaker**: The failure-tracking mechanism (as used for Claude Code CLI) that opens after repeated failures to prevent retry storms, with half-open probe recovery.
 - **Event_Bus**: The singleton event emitter (`eventBus`) used for inter-component progress reporting during agentic execution.
 - **JSON_RPC_Message**: A JSON-RPC 2.0 message object with fields: `jsonrpc` ("2.0"), `method` (string), `params` (object), `id` (number for requests), and optionally `result` or `error` for responses.
-- **ACP_Session_Notification**: A JSON-RPC 2.0 notification sent by Kiro CLI during session execution, with method `session/notification` and params containing event types: AgentMessageChunk, ToolCall, ToolCallUpdate, TurnEnd.
-- **ACP_Session_Mode**: The execution mode for a Kiro ACP session. "read-only" prevents tool usage (used for non-agentic text-only calls), "auto" allows tools with user approval, "full-access" allows all tools without approval (used for agentic calls).
+- **ACP_Session_Update**: A JSON-RPC 2.0 notification sent by Kiro CLI during session execution, with method `session/update` and params containing an `update` object. The `update.sessionUpdate` field is the discriminator, with values: `agent_message_chunk` (text content at `update.content.text`), `tool_call` (tool invocation), `tool_call_update` (tool progress), `usage_update` (token/cost data). There is no `TurnEnd` notification — turn completion is signaled by the `session/prompt` response arriving with a `stopReason` field.
+- **ACP_Session_Mode**: The execution mode for a Kiro ACP session. Modes are agent-specific (e.g., `"kiro_default"`, `"kiro_planner"`, `"rob"`) and returned in the `session/new` response under `modes.availableModes`. The `session/set_mode` method takes `sessionId` and `modeId` parameters. There are no generic "read-only"/"full-access" modes — the provider must select from the available modes returned by the session.
 - **ACP_Usage_Update**: A `session/update` notification with `sessionUpdate: "usage_update"` containing context window state (`used` tokens, `size` total) and optional cumulative `cost` object. Defined in the ACP draft RFD "Session Usage and Context Status" (https://agentclientprotocol.com/rfds/session-usage). The RFD also specifies a `usage` field in `PromptResponse` with per-turn token counts (`total_tokens`, `input_tokens`, `output_tokens`, `thought_tokens`, `cached_read_tokens`, `cached_write_tokens`).
 - **MCP_Server_Config**: A JSON object describing an MCP server to forward to Kiro via the `session/new` ACP method, with fields: `name`, `command`, `args`, `env`. Uses the ACP stdio transport schema.
 
@@ -39,8 +39,8 @@ Add Kiro CLI as a new LLM provider for PEPAGI, alongside the existing Claude, GP
 
 #### Acceptance Criteria
 
-1. WHEN `callKiro` is invoked, THE Kiro_Provider SHALL spawn `kiro-cli` with the `acp` argument as a child process with stdio pipes (stdin, stdout, stderr).
-2. WHEN the subprocess is spawned, THE Kiro_Provider SHALL send a JSON-RPC 2.0 `initialize` request and wait for a successful response before proceeding.
+1. WHEN `callKiro` is invoked, THE Kiro_Provider SHALL spawn `kiro-cli` with the `acp` argument as a child process with stdio pipes (stdin, stdout, stderr). WHEN a non-default model is configured (i.e. `agents.kiro.model` is not `"auto"`), THE Kiro_Provider SHALL include `--model <model>` in the spawn arguments.
+2. WHEN the subprocess is spawned, THE Kiro_Provider SHALL send a JSON-RPC 2.0 `initialize` request with `protocolVersion: 1` (integer) and wait for a successful response before proceeding.
 3. IF the `kiro-cli` binary is not found on the system PATH, THEN THE Kiro_Provider SHALL throw an LLMProviderError with a descriptive message indicating that Kiro CLI is not installed.
 4. IF the `initialize` request fails or times out after 10 seconds, THEN THE Kiro_Provider SHALL kill the subprocess and throw an LLMProviderError indicating initialization failure.
 5. WHEN the LLM call completes or fails, THE Kiro_Provider SHALL terminate the subprocess and release all associated resources (stdin, stdout, stderr listeners).
@@ -51,11 +51,10 @@ Add Kiro CLI as a new LLM provider for PEPAGI, alongside the existing Claude, GP
 
 #### Acceptance Criteria
 
-1. WHEN the ACP connection is initialized, THE Kiro_Provider SHALL send a `session/new` request to create a new session for each LLM call.
-2. WHEN a session is created, THE Kiro_Provider SHALL send a `session/prompt` request containing the user prompt constructed from the LLMCallOptions messages array.
-3. THE Kiro_Provider SHALL construct the user prompt by concatenating all message contents from the LLMCallOptions messages array, prepended with the system prompt.
+1. WHEN the ACP connection is initialized, THE Kiro_Provider SHALL send a `session/new` request with a `cwd` parameter set to the current working directory (absolute path) to create a new session for each LLM call.
+2. WHEN a session is created, THE Kiro_Provider SHALL send a `session/prompt` request containing the user prompt as an array of content blocks (`[{type: "text", text: "..."}]`), constructed from the LLMCallOptions messages array.
+3. THE Kiro_Provider SHALL construct the prompt content blocks by prepending the system prompt as the first text block, followed by each message content as a separate text block.
 4. IF the `session/new` request returns an error, THEN THE Kiro_Provider SHALL throw an LLMProviderError with the error details from the JSON-RPC response.
-5. WHEN a non-default model is configured (i.e. `agents.kiro.model` is not `"auto"`), THE Kiro_Provider SHALL send a `session/set_model` JSON-RPC request with the configured model name after session creation and before sending the `session/prompt` request.
 
 ### Requirement 4: ACP Streaming Event Parsing
 
@@ -63,11 +62,12 @@ Add Kiro CLI as a new LLM provider for PEPAGI, alongside the existing Claude, GP
 
 #### Acceptance Criteria
 
-1. WHILE the session is active, THE Kiro_Provider SHALL read newline-delimited JSON-RPC 2.0 messages from the subprocess stdout and parse each as a session notification.
-2. WHEN an `AgentMessageChunk` notification is received, THE Kiro_Provider SHALL accumulate the text content for the final response and emit a `mediator:thinking` event on the Event_Bus with the chunk text (truncated to 200 characters) if a taskId is present.
-3. WHEN a `ToolCall` notification is received, THE Kiro_Provider SHALL emit a `tool:call` event on the Event_Bus with the tool name and input summary if a taskId is present.
-4. WHEN a `TurnEnd` notification is received, THE Kiro_Provider SHALL treat the session as complete and assemble the final LLMResponse from accumulated content.
+1. WHILE the session is active, THE Kiro_Provider SHALL read newline-delimited JSON-RPC 2.0 messages from the subprocess stdout and parse each as a `session/update` notification, using `params.update.sessionUpdate` as the discriminator.
+2. WHEN a `session/update` notification with `sessionUpdate: "agent_message_chunk"` is received, THE Kiro_Provider SHALL accumulate the text content from `params.update.content.text` for the final response and emit a `mediator:thinking` event on the Event_Bus with the chunk text (truncated to 200 characters) if a taskId is present.
+3. WHEN a `session/update` notification with `sessionUpdate: "tool_call"` is received, THE Kiro_Provider SHALL emit a `tool:call` event on the Event_Bus with the tool name and input summary if a taskId is present.
+4. WHEN the `session/prompt` JSON-RPC response is received (matching the request id) with a `stopReason` field, THE Kiro_Provider SHALL treat the session as complete and assemble the final LLMResponse from accumulated content. There is no separate `TurnEnd` notification.
 5. IF a JSON-RPC 2.0 error response is received for the `session/prompt` request, THEN THE Kiro_Provider SHALL throw an LLMProviderError with the error message and code.
+6. THE Kiro_Provider SHALL silently ignore any Kiro-specific extension notifications (e.g., `_kiro.dev/mcp/server_initialized`, `_kiro.dev/commands/available`, `_kiro.dev/metadata`) received during session setup.
 
 ### Requirement 5: LLMResponse Construction
 
@@ -75,12 +75,12 @@ Add Kiro CLI as a new LLM provider for PEPAGI, alongside the existing Claude, GP
 
 #### Acceptance Criteria
 
-1. THE Kiro_Provider SHALL return an LLMResponse with the `content` field set to the accumulated text from all AgentMessageChunk notifications.
-2. THE Kiro_Provider SHALL return an LLMResponse with the `toolCalls` field populated from ToolCall notifications received during the session.
+1. THE Kiro_Provider SHALL return an LLMResponse with the `content` field set to the accumulated text from all `agent_message_chunk` session/update notifications.
+2. THE Kiro_Provider SHALL return an LLMResponse with the `toolCalls` field populated from `tool_call` session/update notifications received during the session.
 3. IF the ACP response does not include token usage data, THE Kiro_Provider SHALL estimate usage.inputTokens as the prompt character count divided by 4, and usage.outputTokens as the response character count divided by 4.
 4. IF the ACP response does not include cost data, THE Kiro_Provider SHALL set cost to 0.
 5. THE Kiro_Provider SHALL return an LLMResponse with `model` set to the model string from the LLMCallOptions.
-6. THE Kiro_Provider SHALL return an LLMResponse with `latencyMs` measured from the start of the `callKiro` invocation to the receipt of the TurnEnd notification.
+6. THE Kiro_Provider SHALL return an LLMResponse with `latencyMs` measured from the start of the `callKiro` invocation to the receipt of the `session/prompt` response (with `stopReason`).
 
 ### Requirement 6: LLMProvider Routing Integration
 
@@ -151,19 +151,20 @@ Add Kiro CLI as a new LLM provider for PEPAGI, alongside the existing Claude, GP
 
 #### Acceptance Criteria
 
-1. WHEN `agents.kiro.agent` is set to a non-empty string in the configuration, THE Kiro_Provider SHALL spawn `kiro-cli` with arguments `["acp", "--agent", "<agent_name>"]`.
-2. WHEN `agents.kiro.agent` is empty or absent, THE Kiro_Provider SHALL spawn `kiro-cli` with arguments `["acp"]` only.
+1. WHEN `agents.kiro.agent` is set to a non-empty string in the configuration, THE Kiro_Provider SHALL spawn `kiro-cli` with arguments `["acp", "--agent", "<agent_name>"]` (plus `--model <model>` if model != "auto").
+2. WHEN `agents.kiro.agent` is empty or absent, THE Kiro_Provider SHALL spawn `kiro-cli` with arguments `["acp"]` only (plus `--model <model>` if model != "auto").
 3. THE Kiro_Provider SHALL log the agent name being used at INFO level when a custom agent is configured.
 
 ### Requirement 13: Session Mode Passthrough
 
-**User Story:** As a PEPAGI developer, I want the Kiro provider to map the agenticMode flag to the appropriate ACP session mode, so that non-agentic calls use read-only mode (preventing unnecessary tool usage) and agentic calls use full-access mode (allowing full tool access).
+**User Story:** As a PEPAGI developer, I want the Kiro provider to optionally set the ACP session mode based on available modes, so that the session uses an appropriate mode when one is available.
 
 #### Acceptance Criteria
 
-1. WHEN `agenticMode` is `true` in the LLMCallOptions, THE Kiro_Provider SHALL send a `session/set_mode` JSON-RPC request with mode `"full-access"` after session creation and before sending the prompt.
-2. WHEN `agenticMode` is `false` or absent in the LLMCallOptions, THE Kiro_Provider SHALL send a `session/set_mode` JSON-RPC request with mode `"read-only"` after session creation and before sending the prompt.
-3. THE Kiro_Provider SHALL emit a `mediator:thinking` event indicating the session mode being used if a taskId is present.
+1. WHEN the `session/new` response includes `modes.availableModes`, THE Kiro_Provider SHALL store the available modes and the `currentModeId` for potential mode selection.
+2. WHEN `agenticMode` is `true` and the available modes include a mode whose `id` contains "default" or matches the agent name, THE Kiro_Provider SHALL send a `session/set_mode` JSON-RPC request with `sessionId` and `modeId` set to that mode's `id`.
+3. WHEN `agenticMode` is `false` and the available modes include a mode whose `id` contains "planner" or "readonly", THE Kiro_Provider SHALL send a `session/set_mode` with that mode's `id`. If no such mode exists, THE Kiro_Provider SHALL skip the `session/set_mode` call and use the default mode.
+4. THE Kiro_Provider SHALL emit a `mediator:thinking` event indicating the session mode being used if a taskId is present.
 
 ### Requirement 14: Token Usage and Context Window Tracking
 
