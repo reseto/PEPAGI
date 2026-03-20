@@ -625,3 +625,8 @@ The ACP simulator replaces most spawn mocking. Remaining mocks:
 - `vi.useFakeTimers()` for circuit breaker timing tests (threshold windows, reset timeouts)
 - Mock `eventBus.emit` to verify event emission (spy, not replace)
 - Direct Zod schema and config loader tests need no mocking
+
+### Implementation Notes
+
+- **JSONL parser bug (found during task 9.1)**: The stdout `data` handler's `for (const raw of lines)` loop used `return` to exit after processing each line. In an arrow function, `return` exits the entire handler — not just the current loop iteration. When the ACP simulator sent multiple JSON-RPC messages in a single stdio chunk (which happens routinely with synchronous writes), only the first line was processed and the rest were silently dropped. Fixed by changing `return` → `continue` for non-terminal branches. This is a subtle pattern to watch for in any Node.js stream parser that processes multiple lines per `data` event.
+- **ESM mocking constraint**: `vi.spyOn()` cannot mock ESM module exports (`node:child_process`, config loader) because ESM namespace objects are non-configurable. Tests must use top-level `vi.mock()` with shared mutable state variables to control scenario selection per test. The `loadConfig` mock must persist at the module level (not per-test) to survive `withRetry` retry attempts within a single provider call.

@@ -65,8 +65,8 @@ Add Kiro CLI as a new LLM provider to PEPAGI using the Agent Client Protocol (AC
     - Verify system:alert events emitted on each transition
     - **Validates: Requirements 9.2, 9.3, 16.1, 16.2, 16.3**
 
-- [ ] 6. Implement callKiro() core provider function
-  - [ ] 6.1 Implement callKiro() in `src/agents/llm-provider.ts`
+- [x] 6. Implement callKiro() core provider function
+  - [x] 6.1 Implement callKiro() in `src/agents/llm-provider.ts`
     - Spawn `kiro-cli acp` subprocess with stdio pipes (with `--model <model>` when model != "auto")
     - Perform ACP handshake: initialize (protocolVersion: 1) → session/new (with cwd) → (optional session/set_mode based on available modes) → session/prompt (content blocks array)
     - Parse streaming `session/update` notifications: agent_message_chunk (text at update.content.text), tool_call, usage_update. Turn completion via prompt response with stopReason (no TurnEnd notification). Silently ignore `_kiro.dev/*` extension notifications.
@@ -78,34 +78,34 @@ Add Kiro CLI as a new LLM provider to PEPAGI using the Agent Client Protocol (AC
     - Return standard LLMResponse with content, toolCalls, usage, cost, model, latencyMs
     - Wrap in kiroCircuitBreaker.call()
     - _Requirements: 2.1, 2.2, 2.3, 2.4, 2.5, 3.1, 3.2, 3.3, 3.4, 3.5, 4.1, 4.2, 4.3, 4.4, 4.5, 5.1, 5.2, 5.3, 5.4, 5.5, 5.6, 10.1, 10.2, 10.3, 12.1, 12.2, 12.3, 13.1, 13.2, 13.3, 14.1, 14.2, 14.3, 14.4, 14.5, 15.2, 15.3, 15.4_
-  - [ ] 6.2 Implement checkKiroHealth() function
+  - [x] 6.2 Implement checkKiroHealth() function
     - Spawn `kiro-cli acp`, send initialize, return true if response within 5s
     - Return false on ENOENT or timeout
     - Export the function
     - _Requirements: 11.1, 11.2, 11.3_
-  - [ ] 6.3 Add "kiro" case to LLMProvider.call() routing switch
+  - [x] 6.3 Add "kiro" case to LLMProvider.call() routing switch
     - Load kiro config from PepagiConfig and pass to callKiro()
     - Existing withRetry wrapper applies automatically
     - _Requirements: 6.1, 6.2_
 
-- [ ] 7. Integrate Kiro into Agent Pool and Difficulty Router
-  - [ ] 7.1 Add Kiro to agent definitions in `src/agents/agent-pool.ts`
+- [x] 7. Integrate Kiro into Agent Pool and Difficulty Router
+  - [x] 7.1 Add Kiro to agent definitions in `src/agents/agent-pool.ts`
     - Add `{ provider: "kiro", displayName: "Kiro CLI (ACP)", defaultModel: "auto" }` to agentDefs
     - Use dedicated config schema (no apiKey check), availability based on enabled flag
     - Import and call checkKiroHealth() in probeLocalModels()
     - _Requirements: 7.6, 9.1_
-  - [ ] 7.2 Add Kiro to fallback chain and routing in `src/core/difficulty-router.ts`
+  - [x] 7.2 Add Kiro to fallback chain and routing in `src/core/difficulty-router.ts`
     - Add `"kiro"` to the fallback chain order in getFallbackChain()
     - Treat Kiro as zero-cost local provider (like Ollama) for trivial/simple tasks
     - _Requirements: 8.1, 8.2_
 
-- [ ] 8. Checkpoint — Verify full build and existing tests pass
+- [x] 8. Checkpoint — Verify full build and existing tests pass
   - Ensure `npm run build` succeeds with all new code
   - Ensure all existing tests still pass (`npm test`)
   - Ask the user if questions arise.
 
-- [ ] 9. Write provider tests using ACP simulator
-  - [ ] 9.1 Create `src/agents/__tests__/kiro-provider.test.ts` with unit tests
+- [x] 9. Write provider tests using ACP simulator
+  - [x] 9.1 Create `src/agents/__tests__/kiro-provider.test.ts` with unit tests
     - Test happy-path: spawn simulator, verify LLMResponse has correct content, toolCalls, usage, cost, latencyMs
     - Test happy-no-usage: verify fallback estimation (chars/4, cost=0)
     - Test error-on-session-new: verify LLMProviderError thrown
@@ -125,7 +125,7 @@ Add Kiro CLI as a new LLM provider to PEPAGI using the Agent Client Protocol (AC
     - Test usage data from ACP response (happy-path with usage)
     - Test cost from usage_update notification
     - _Requirements: 2.1–2.5, 3.1–3.5, 4.1–4.5, 5.1–5.6, 6.1, 6.2, 9.1–9.3, 10.1–10.3, 11.1–11.3, 14.1–14.4_
-  - [ ]* 9.2 Write property test: ACP Protocol Message Ordering
+  - [x] 9.2 Write property test: ACP Protocol Message Ordering
     - **Property 1: ACP Protocol Message Ordering**
     - Spawn simulator, capture stdin writes, verify sequence: initialize → session/new (with cwd) → (optional set_mode based on available modes) → session/prompt (content blocks). No session/set_model — model via --model CLI flag.
     - Use fast-check to generate random LLMCallOptions + KiroAgentConfig (model: "auto" vs specific)
@@ -178,6 +178,8 @@ Add Kiro CLI as a new LLM provider to PEPAGI using the Agent Client Protocol (AC
 
 ## Notes
 
+- **Bug found during task 9.1**: The JSONL stdout parser in `callKiro()` used `return` instead of `continue` inside the `for (const raw of lines)` loop. When the ACP simulator sent multiple JSON-RPC messages in a single stdio chunk (common with synchronous writes), only the first line was processed — the rest were silently dropped. Fixed by changing `return` → `continue` for non-terminal branches (initialize response, session/new response, set_mode response, and session/update notifications). The `return` after `fail()` and `finish()` is correct since those settle the promise.
+- **Testing pattern**: ESM module exports (`node:child_process`) cannot be spied on with `vi.spyOn` — use top-level `vi.mock()` with shared mutable state variables (`activeScenario`, `spawnEnoent`) instead. The `loadConfig` mock must also be at the `vi.mock` level (not per-test `vi.spyOn`) to persist across `withRetry` retry attempts within a single test.
 - Tasks marked with `*` are optional and can be skipped for faster MVP
 - The ACP simulator (task 3) is built early so all subsequent tests can spawn it as a real subprocess
 - Each task references specific requirements for traceability
