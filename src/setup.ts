@@ -441,8 +441,8 @@ async function setup(): Promise<void> {
   // ─── Určit hlavního providera (managerProvider) ────────────
 
   // Only change managerProvider if the current one is disabled (respect user's choice)
-  const currentMgr = config.managerProvider as "claude" | "gpt" | "gemini";
-  const currentMgrEnabled = config.agents[currentMgr]?.enabled ?? false;
+  const currentMgr = config.managerProvider;
+  const currentMgrEnabled = (config.agents as Record<string, { enabled?: boolean }>)[currentMgr]?.enabled ?? false;
 
   if (!currentMgrEnabled) {
     // Current manager provider was disabled — switch to first enabled one

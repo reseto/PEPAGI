@@ -87,8 +87,12 @@ async function printHelp(): Promise<void> {
 async function boot() {
   const config = await loadConfig();
   const llm = new LLMProvider();
-  const mgrProvider = config.managerProvider as "claude" | "gpt" | "gemini";
+  const mgrProvider = config.managerProvider;
   llm.configure(mgrProvider, config.managerModel, getCheapModel(mgrProvider));
+  // Register custom OpenAI-compatible providers
+  if (config.customProviders) {
+    llm.registerCustomProviders(config.customProviders);
+  }
   const pool = new AgentPool(config);
   const guard = new SecurityGuard(config);
   const taskStore = new TaskStore();
@@ -277,8 +281,11 @@ async function showMemory(services: Awaited<ReturnType<typeof boot>>): Promise<v
 async function showProposals(): Promise<void> {
   const proposalLlm = new LLMProvider();
   const proposalConfig = await loadConfig();
-  const proposalProvider = proposalConfig.managerProvider as "claude" | "gpt" | "gemini";
+  const proposalProvider = proposalConfig.managerProvider;
   proposalLlm.configure(proposalProvider, proposalConfig.managerModel, getCheapModel(proposalProvider));
+  if (proposalConfig.customProviders) {
+    proposalLlm.registerCustomProviders(proposalConfig.customProviders);
+  }
   const archProposer = new ArchitectureProposer(proposalLlm);
   const proposals = await archProposer.getProposals();
 

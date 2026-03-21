@@ -112,6 +112,7 @@ function makeConfig(): PepagiConfig {
       requireApproval: [],
     },
     queue: { maxConcurrentTasks: 4, taskTimeoutMs: 120_000 },
+    customProviders: {},
     consciousness: { profile: "MINIMAL", enabled: true },
     web: { enabled: false, port: 3100 },
   };

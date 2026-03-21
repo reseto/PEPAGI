@@ -5,7 +5,7 @@
 import { networkInterfaces } from "node:os";
 import type { AgentProfile, AgentProvider } from "../core/types.js";
 import type { PepagiConfig } from "../config/loader.js";
-import { PRICING } from "./pricing.js";
+import { PRICING, registerCustomPricing } from "./pricing.js";
 import { checkOllamaHealth, checkLMStudioHealth, listOllamaModels, listLMStudioModels } from "./llm-provider.js";
 import { Logger } from "../core/logger.js";
 import { eventBus } from "../core/event-bus.js";
@@ -75,6 +75,39 @@ export class AgentPool {
 
       this.agents.set(def.provider, profile);
       this.load.set(def.provider, 0);
+    }
+
+    // Load custom OpenAI-compatible providers from config
+    const customProviders = this.config.customProviders ?? {};
+    for (const [name, cpCfg] of Object.entries(customProviders)) {
+      if (!cpCfg.enabled || !cpCfg.baseUrl) continue;
+
+      // Register pricing for custom model
+      registerCustomPricing([{
+        model: cpCfg.model,
+        provider: name,
+        inputCostPer1M: cpCfg.inputCostPer1M ?? 0,
+        outputCostPer1M: cpCfg.outputCostPer1M ?? 0,
+        contextWindow: cpCfg.contextWindow ?? 128_000,
+        supportsTools: cpCfg.supportsTools ?? true,
+      }]);
+
+      const customProfile: AgentProfile = {
+        provider: name,
+        model: cpCfg.model,
+        displayName: cpCfg.displayName || name,
+        costPerMInputTokens: cpCfg.inputCostPer1M ?? 0,
+        costPerMOutputTokens: cpCfg.outputCostPer1M ?? 0,
+        maxContextTokens: cpCfg.contextWindow ?? 128_000,
+        supportsTools: cpCfg.supportsTools ?? true,
+        available: true,
+        apiKey: cpCfg.apiKey,
+        maxOutputTokens: cpCfg.maxOutputTokens ?? 4096,
+        baseUrl: cpCfg.baseUrl,
+      };
+
+      this.agents.set(name, customProfile);
+      this.load.set(name, 0);
     }
   }
 
@@ -230,6 +263,10 @@ export class AgentPool {
 
   getFallbackChain(preferred: AgentProvider): AgentProvider[] {
     const order: AgentProvider[] = [preferred, "gpt", "gemini", "claude", "ollama", "lmstudio"];
+    // Append custom providers to the end of the fallback chain
+    for (const [name] of this.agents) {
+      if (!order.includes(name)) order.push(name);
+    }
     const seen = new Set<AgentProvider>();
     const chain: AgentProvider[] = [];
     for (const p of order) {

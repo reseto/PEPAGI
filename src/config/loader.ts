@@ -105,8 +105,24 @@ const WebDashboardConfigSchema = z.object({
   port: z.number().default(3100),
 });
 
+export const CustomProviderConfigSchema = z.object({
+  displayName: z.string().default(""),
+  baseUrl: z.string().default(""),
+  apiKey: z.string().default(""),
+  model: z.string().default(""),
+  enabled: z.boolean().default(true),
+  maxOutputTokens: z.number().default(4096),
+  temperature: z.number().min(0).max(2).default(0.3),
+  inputCostPer1M: z.number().default(0),
+  outputCostPer1M: z.number().default(0),
+  contextWindow: z.number().default(128_000),
+  supportsTools: z.boolean().default(true),
+});
+
+export type CustomProviderConfig = z.infer<typeof CustomProviderConfigSchema>;
+
 const PepagiConfigSchema = z.object({
-  managerProvider: z.enum(["claude", "gpt", "gemini"]).default("claude"),
+  managerProvider: z.string().default("claude"),
   managerModel: z.string().default("claude-sonnet-4-6"),
   profile: ProfileSchema.default(() => ({
     userName: "",
@@ -150,6 +166,7 @@ const PepagiConfigSchema = z.object({
     maxConcurrentTasks: z.number().default(4),
     taskTimeoutMs: z.number().default(120_000),
   }).default({ maxConcurrentTasks: 4, taskTimeoutMs: 120_000 }),
+  customProviders: z.record(z.string(), CustomProviderConfigSchema).default({}),
   consciousness: ConsciousnessConfigSchema.default({ profile: "MINIMAL", enabled: true }),
   web: WebDashboardConfigSchema.default({ enabled: true, port: 3100 }),
 });
@@ -261,15 +278,26 @@ export async function loadConfig(): Promise<PepagiConfig> {
 
   // Auto-correct managerProvider if the configured provider is disabled or has no API key.
   // This ensures that if the user disabled Claude and only has GPT, the system actually uses GPT.
-  const mgrProvider = config.managerProvider as "claude" | "gpt" | "gemini";
-  const mgrAgent = config.agents[mgrProvider];
-  const mgrHasKey = !!(mgrAgent.apiKey || (mgrProvider === "claude" ? true : mgrProvider === "gpt" ? process.env.OPENAI_API_KEY : process.env.GOOGLE_API_KEY));
-  const mgrIsUsable = mgrProvider === "claude" ? mgrAgent.enabled : mgrAgent.enabled && mgrHasKey;
+  const mgrProvider = config.managerProvider;
+  const builtinProviders: Array<"claude" | "gpt" | "gemini"> = ["claude", "gpt", "gemini"];
+
+  // Check if manager provider is a custom provider
+  const customCfg = config.customProviders?.[mgrProvider];
+  let mgrIsUsable: boolean;
+  if (customCfg) {
+    // Custom provider: usable if enabled and has baseUrl
+    mgrIsUsable = customCfg.enabled && !!customCfg.baseUrl;
+  } else if (builtinProviders.includes(mgrProvider as "claude" | "gpt" | "gemini")) {
+    const mgrAgent = config.agents[mgrProvider as "claude" | "gpt" | "gemini"];
+    const mgrHasKey = !!(mgrAgent.apiKey || (mgrProvider === "claude" ? true : mgrProvider === "gpt" ? process.env.OPENAI_API_KEY : process.env.GOOGLE_API_KEY));
+    mgrIsUsable = mgrProvider === "claude" ? mgrAgent.enabled : mgrAgent.enabled && mgrHasKey;
+  } else {
+    mgrIsUsable = false;
+  }
 
   if (!mgrIsUsable) {
     // Find first enabled agent with an API key to use as manager
-    const candidates: Array<"claude" | "gpt" | "gemini"> = ["claude", "gpt", "gemini"];
-    for (const candidate of candidates) {
+    for (const candidate of builtinProviders) {
       const agentCfg = config.agents[candidate];
       const hasKey = !!(agentCfg.apiKey || (candidate === "claude" ? true : candidate === "gpt" ? process.env.OPENAI_API_KEY : process.env.GOOGLE_API_KEY));
       const usable = candidate === "claude" ? agentCfg.enabled : agentCfg.enabled && hasKey;

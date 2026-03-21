@@ -2,7 +2,19 @@
 // PEPAGI — Core Type Definitions
 // ═══════════════════════════════════════════════════════════════
 
-export type AgentProvider = "claude" | "gpt" | "gemini" | "ollama" | "lmstudio";
+/** Built-in provider names (hardcoded in the codebase) */
+export type BuiltinProvider = "claude" | "gpt" | "gemini" | "ollama" | "lmstudio";
+
+/** All providers — built-in + custom OpenAI-compatible */
+export type AgentProvider = string;
+
+/** Array of all built-in provider names */
+export const BUILTIN_PROVIDERS: readonly BuiltinProvider[] = ["claude", "gpt", "gemini", "ollama", "lmstudio"] as const;
+
+/** Type guard: is this provider a built-in one? */
+export function isBuiltinProvider(provider: string): provider is BuiltinProvider {
+  return (BUILTIN_PROVIDERS as readonly string[]).includes(provider);
+}
 export type TaskStatus = "pending" | "queued" | "assigned" | "running" | "waiting_subtasks" | "review" | "completed" | "failed" | "cancelled";
 export type TaskPriority = "critical" | "high" | "medium" | "low";
 export type DifficultyLevel = "trivial" | "simple" | "medium" | "complex" | "unknown";
@@ -66,6 +78,8 @@ export interface AgentProfile {
   maxAgenticTurns?: number;
   /** Max output tokens override */
   maxOutputTokens?: number;
+  /** Base URL for custom OpenAI-compatible providers */
+  baseUrl?: string;
 }
 
 // ─── Events ──────────────────────────────────────────────────

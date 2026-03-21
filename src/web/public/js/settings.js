@@ -63,9 +63,43 @@ async function loadConfig() {
   }
 }
 
+// ── Manager Provider select — dynamic population ─────────────
+
+function updateManagerProviderSelect(customProviders) {
+  const select = document.getElementById('managerProvider');
+  if (!select) return;
+  const currentValue = select.value;
+
+  // Remove existing custom options (keep built-in)
+  const builtinValues = ['claude', 'gpt', 'gemini'];
+  for (const opt of [...select.options]) {
+    if (!builtinValues.includes(opt.value)) {
+      select.removeChild(opt);
+    }
+  }
+
+  // Add custom providers
+  if (customProviders) {
+    for (const [name, cfg] of Object.entries(customProviders)) {
+      if (cfg.enabled) {
+        const opt = document.createElement('option');
+        opt.value = name;
+        opt.textContent = cfg.displayName || name;
+        select.appendChild(opt);
+      }
+    }
+  }
+
+  // Restore previous value
+  select.value = currentValue;
+}
+
 // ── Render config into forms ─────────────────────────────────
 
 function renderConfig(c) {
+  // Update manager provider select with custom providers
+  updateManagerProviderSelect(c.customProviders);
+
   // General
   setVal('managerProvider', c.managerProvider || 'claude');
   setVal('managerModel', c.managerModel || '');
@@ -81,6 +115,9 @@ function renderConfig(c) {
 
   // Agents
   renderAgents(c.agents || {});
+
+  // Custom Providers
+  renderCustomProviders(c.customProviders || {});
 
   // Platforms
   renderPlatforms(c.platforms || {});
@@ -166,6 +203,186 @@ function renderAgents(agents) {
     btn.addEventListener('click', () => testAgent(btn.dataset.testAgent, btn));
   });
 }
+
+// ── Custom Providers ─────────────────────────────────────────
+
+function renderCustomProviders(customProviders) {
+  const grid = document.getElementById('custom-providers-config');
+  if (!grid) return;
+
+  const entries = Object.entries(customProviders || {});
+  if (entries.length === 0) {
+    grid.innerHTML = '<p style="color:var(--text-dim);font-size:0.85rem">No custom providers configured yet.</p>';
+    return;
+  }
+
+  grid.innerHTML = entries.map(([name, cp]) => {
+    const hasKey = cp.apiKey === HIDDEN;
+    const keyPlaceholder = hasKey ? '\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022 (set)' : 'Enter API key...';
+
+    return `<div class="agent-config-card" style="border-top:3px solid var(--orange, #f90)" data-custom-provider="${escapeAttr(name)}">
+      <div class="agent-config-header">
+        <span class="agent-config-name" style="color:var(--orange, #f90)">${escapeHtml(cp.displayName || name)}</span>
+        <div style="display:flex;gap:8px;align-items:center">
+          <label class="toggle">
+            <input type="checkbox" data-cp="${escapeAttr(name)}" data-field="enabled" ${cp.enabled ? 'checked' : ''}>
+            <span class="toggle-slider"></span>
+          </label>
+          <button type="button" class="btn-test" style="background:var(--red,#e44);color:#fff;border:none;padding:4px 10px;border-radius:4px;cursor:pointer;font-size:0.75rem" data-remove-cp="${escapeAttr(name)}">Remove</button>
+        </div>
+      </div>
+      <div class="form-grid" style="gap:10px">
+        <div class="form-group">
+          <label>Slug (ID)</label>
+          <input type="text" class="form-input" data-cp="${escapeAttr(name)}" data-field="_name" value="${escapeAttr(name)}" readonly style="opacity:0.6">
+        </div>
+        <div class="form-group">
+          <label>Display Name</label>
+          <input type="text" class="form-input" data-cp="${escapeAttr(name)}" data-field="displayName" value="${escapeAttr(cp.displayName || '')}" placeholder="e.g. Deepinfra">
+        </div>
+        <div class="form-group full-width">
+          <label>Base URL</label>
+          <input type="text" class="form-input" data-cp="${escapeAttr(name)}" data-field="baseUrl" value="${escapeAttr(cp.baseUrl || '')}" placeholder="https://api.deepinfra.com">
+        </div>
+        <div class="form-group full-width">
+          <label>API Key</label>
+          <div class="apikey-group">
+            <input type="password" class="form-input" data-cp="${escapeAttr(name)}" data-field="apiKey" placeholder="${keyPlaceholder}" value="">
+            <button type="button" class="btn-test" data-test-cp="${escapeAttr(name)}">Test</button>
+          </div>
+        </div>
+        <div class="form-group">
+          <label>Model</label>
+          <input type="text" class="form-input" data-cp="${escapeAttr(name)}" data-field="model" value="${escapeAttr(cp.model || '')}" placeholder="model-name">
+        </div>
+        <div class="form-group">
+          <label>Max Output Tokens</label>
+          <input type="number" class="form-input" data-cp="${escapeAttr(name)}" data-field="maxOutputTokens" value="${cp.maxOutputTokens ?? 4096}" min="100" max="128000">
+        </div>
+        <div class="form-group">
+          <label>Input Cost ($/1M tokens)</label>
+          <input type="number" class="form-input" data-cp="${escapeAttr(name)}" data-field="inputCostPer1M" value="${cp.inputCostPer1M ?? 0}" min="0" step="0.01">
+        </div>
+        <div class="form-group">
+          <label>Output Cost ($/1M tokens)</label>
+          <input type="number" class="form-input" data-cp="${escapeAttr(name)}" data-field="outputCostPer1M" value="${cp.outputCostPer1M ?? 0}" min="0" step="0.01">
+        </div>
+        <div class="form-group">
+          <label>Context Window</label>
+          <input type="number" class="form-input" data-cp="${escapeAttr(name)}" data-field="contextWindow" value="${cp.contextWindow ?? 128000}" min="1000">
+        </div>
+        <div class="form-group toggle-group">
+          <label>Supports Tools</label>
+          <label class="toggle">
+            <input type="checkbox" data-cp="${escapeAttr(name)}" data-field="supportsTools" ${cp.supportsTools !== false ? 'checked' : ''}>
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+
+  // Wire test buttons for custom providers
+  grid.querySelectorAll('[data-test-cp]').forEach(btn => {
+    btn.addEventListener('click', () => testCustomProvider(btn.dataset.testCp, btn));
+  });
+
+  // Wire remove buttons
+  grid.querySelectorAll('[data-remove-cp]').forEach(btn => {
+    btn.addEventListener('click', () => removeCustomProvider(btn.dataset.removeCp));
+  });
+}
+
+function addCustomProvider() {
+  const name = prompt('Enter a slug for the provider (lowercase, no spaces, e.g. "deepinfra"):');
+  if (!name) return;
+  const slug = name.toLowerCase().replace(/[^a-z0-9_-]/g, '');
+  if (!slug) {
+    showStatus('Invalid provider name — use only lowercase letters, numbers, hyphens', 'error');
+    return;
+  }
+  if (AGENT_PROVIDERS.includes(slug)) {
+    showStatus('Cannot use a built-in provider name', 'error');
+    return;
+  }
+
+  // Add to current config (in memory)
+  if (!currentConfig.customProviders) currentConfig.customProviders = {};
+  if (currentConfig.customProviders[slug]) {
+    showStatus('Provider already exists: ' + slug, 'error');
+    return;
+  }
+
+  currentConfig.customProviders[slug] = {
+    displayName: name,
+    baseUrl: '',
+    apiKey: '',
+    model: '',
+    enabled: true,
+    maxOutputTokens: 4096,
+    temperature: 0.3,
+    inputCostPer1M: 0,
+    outputCostPer1M: 0,
+    contextWindow: 128000,
+    supportsTools: true,
+  };
+
+  renderCustomProviders(currentConfig.customProviders);
+  updateManagerProviderSelect(currentConfig.customProviders);
+  showStatus('Provider added: ' + slug + ' — fill in the details and Save', 'success');
+}
+
+function removeCustomProvider(name) {
+  if (!confirm('Remove custom provider "' + name + '"?')) return;
+  if (currentConfig.customProviders) {
+    delete currentConfig.customProviders[name];
+  }
+  renderCustomProviders(currentConfig.customProviders || {});
+  updateManagerProviderSelect(currentConfig.customProviders || {});
+  showStatus('Provider removed: ' + name + ' — click Save to apply', 'success');
+}
+
+async function testCustomProvider(name, btn) {
+  btn.className = 'btn-test testing';
+  btn.textContent = 'Testing...';
+
+  const keyInput = document.querySelector(`input[data-cp="${name}"][data-field="apiKey"]`);
+  const modelInput = document.querySelector(`input[data-cp="${name}"][data-field="model"]`);
+  const urlInput = document.querySelector(`input[data-cp="${name}"][data-field="baseUrl"]`);
+
+  const body = { provider: name };
+  if (keyInput && keyInput.value.trim()) body.apiKey = keyInput.value.trim();
+  if (modelInput && modelInput.value.trim()) body.model = modelInput.value.trim();
+  if (urlInput && urlInput.value.trim()) body.baseUrl = urlInput.value.trim();
+
+  try {
+    const res = await fetch('/api/config/test-agent', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const result = await res.json();
+    if (result.success) {
+      btn.className = 'btn-test success';
+      btn.textContent = `OK (${result.latencyMs}ms)`;
+    } else {
+      btn.className = 'btn-test failed';
+      btn.textContent = 'Failed';
+      showStatus(result.message, 'error');
+    }
+  } catch (err) {
+    btn.className = 'btn-test failed';
+    btn.textContent = 'Error';
+    showStatus('Test failed: ' + err.message, 'error');
+  }
+
+  setTimeout(() => {
+    btn.className = 'btn-test';
+    btn.textContent = 'Test';
+  }, 3000);
+}
+
+// ── Platforms ─────────────────────────────────────────────────
 
 function renderPlatforms(platforms) {
   const grid = document.getElementById('platforms-config');
@@ -294,6 +511,9 @@ function collectConfig() {
     }
   }
 
+  // Custom Providers
+  config.customProviders = collectCustomProviders();
+
   // Platforms
   config.platforms = {};
   for (const name of PLATFORM_NAMES) {
@@ -343,6 +563,34 @@ function collectConfig() {
   };
 
   return config;
+}
+
+function collectCustomProviders() {
+  const result = {};
+  const cards = document.querySelectorAll('[data-custom-provider]');
+  for (const card of cards) {
+    const name = card.dataset.customProvider;
+    const cp = {};
+    const fields = card.querySelectorAll('[data-cp][data-field]');
+    for (const el of fields) {
+      const field = el.dataset.field;
+      if (field === '_name') continue; // skip readonly slug
+      if (field === 'enabled' || field === 'supportsTools') {
+        cp[field] = el.checked;
+      } else if (field === 'apiKey') {
+        const val = el.value.trim();
+        cp[field] = val || HIDDEN;
+      } else if (field === 'maxOutputTokens' || field === 'contextWindow') {
+        cp[field] = parseInt(el.value, 10) || 0;
+      } else if (field === 'inputCostPer1M' || field === 'outputCostPer1M') {
+        cp[field] = parseFloat(el.value) || 0;
+      } else {
+        cp[field] = el.value;
+      }
+    }
+    result[name] = cp;
+  }
+  return result;
 }
 
 // ── Save config ──────────────────────────────────────────────
@@ -442,6 +690,7 @@ function init() {
   setupTabs();
 
   document.getElementById('save-btn')?.addEventListener('click', saveConfig);
+  document.getElementById('add-custom-provider-btn')?.addEventListener('click', addCustomProvider);
 
   loadConfig();
 }

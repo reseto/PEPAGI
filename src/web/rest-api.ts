@@ -124,6 +124,15 @@ function scrubSecrets(config: PepagiConfig): Record<string, unknown> {
     if (platforms["discord"] && typeof platforms["discord"]["botToken"] === "string" && (platforms["discord"]["botToken"] as string).length > 0)
       platforms["discord"]["botToken"] = HIDDEN;
   }
+  // Scrub custom provider API keys
+  const customProviders = c["customProviders"] as Record<string, Record<string, unknown>> | undefined;
+  if (customProviders) {
+    for (const cp of Object.values(customProviders)) {
+      if (cp && typeof cp["apiKey"] === "string" && cp["apiKey"].length > 0) {
+        cp["apiKey"] = HIDDEN;
+      }
+    }
+  }
   return c;
 }
 
@@ -203,6 +212,32 @@ function mergeConfig(existing: PepagiConfig, incoming: Record<string, unknown>):
     merged["queue"] = { ...(merged["queue"] as object), ...(incoming["queue"] as object) };
   }
 
+  // Custom Providers — merge each, handle apiKey specially
+  if (incoming["customProviders"] && typeof incoming["customProviders"] === "object") {
+    const existCustom = (merged["customProviders"] ?? {}) as Record<string, Record<string, unknown>>;
+    const incomingCustom = incoming["customProviders"] as Record<string, Record<string, unknown>>;
+    for (const name of Object.keys(incomingCustom)) {
+      if (!existCustom[name]) existCustom[name] = {};
+      const src = incomingCustom[name]!;
+      const dst = existCustom[name]!;
+      for (const [k, v] of Object.entries(src)) {
+        if (k === "apiKey") {
+          if (v === HIDDEN || v === "" || v === undefined) continue; // keep existing
+          dst[k] = encrypt(v as string);
+        } else {
+          dst[k] = v;
+        }
+      }
+    }
+    // Remove providers that were deleted (not present in incoming but user sent the whole object)
+    for (const name of Object.keys(existCustom)) {
+      if (!(name in incomingCustom)) {
+        delete existCustom[name];
+      }
+    }
+    merged["customProviders"] = existCustom;
+  }
+
   // Consciousness
   if (incoming["consciousness"] && typeof incoming["consciousness"] === "object") {
     merged["consciousness"] = { ...(merged["consciousness"] as object), ...(incoming["consciousness"] as object) };
@@ -248,8 +283,12 @@ export async function handlePutConfig(deps: RestDeps, req: IncomingMessage, res:
 
     // Hot-reload: reconfigure LLM provider with new manager settings
     if (deps.llm) {
-      const provider = merged.managerProvider as "claude" | "gpt" | "gemini";
+      const provider = merged.managerProvider;
       deps.llm.configure(provider, merged.managerModel, getCheapModel(provider));
+      // Re-register custom providers on hot-reload
+      if (merged.customProviders) {
+        deps.llm.registerCustomProviders(merged.customProviders);
+      }
     }
 
     // Hot-reload: update mediator's config reference (askMediator reads this.config)
@@ -275,23 +314,34 @@ export async function handleTestAgent(_deps: RestDeps, req: IncomingMessage, res
     const apiKey = body["apiKey"] as string | undefined;
     const model = body["model"] as string | undefined;
 
-    if (!provider || !["claude", "gpt", "gemini", "ollama", "lmstudio"].includes(provider)) {
+    const builtinProviders = ["claude", "gpt", "gemini", "ollama", "lmstudio"];
+    const config = await loadConfig();
+    const isCustomProvider = !builtinProviders.includes(provider) && config.customProviders?.[provider];
+
+    if (!provider || (!builtinProviders.includes(provider) && !isCustomProvider)) {
       json(res, 400, { error: "Invalid provider" });
       return;
     }
 
     // Get existing key if not provided
     let key = apiKey;
+    const baseUrl = body["baseUrl"] as string | undefined;
     if (!key || key === HIDDEN) {
-      const config = await loadConfig();
-      const agents = config.agents as Record<string, { apiKey?: string }>;
-      const agent = agents[provider];
-      if (agent?.apiKey) {
-        key = isEncrypted(agent.apiKey) ? decrypt(agent.apiKey) : agent.apiKey;
+      if (isCustomProvider) {
+        const cpCfg = config.customProviders[provider];
+        if (cpCfg?.apiKey) {
+          key = isEncrypted(cpCfg.apiKey) ? decrypt(cpCfg.apiKey) : cpCfg.apiKey;
+        }
+      } else {
+        const agents = config.agents as Record<string, { apiKey?: string }>;
+        const agent = agents[provider];
+        if (agent?.apiKey) {
+          key = isEncrypted(agent.apiKey) ? decrypt(agent.apiKey) : agent.apiKey;
+        }
       }
     }
 
-    if (!key && provider !== "ollama" && provider !== "lmstudio") {
+    if (!key && provider !== "ollama" && provider !== "lmstudio" && !isCustomProvider) {
       json(res, 400, { error: "No API key available for this provider" });
       return;
     }
@@ -300,10 +350,21 @@ export async function handleTestAgent(_deps: RestDeps, req: IncomingMessage, res
     const { LLMProvider } = await import("../agents/llm-provider.js");
     const llm = new LLMProvider();
 
+    // Register custom provider on ephemeral LLMProvider for the test
+    if (isCustomProvider) {
+      const cpCfg = config.customProviders[provider];
+      const effectiveBaseUrl = baseUrl || cpCfg.baseUrl;
+      if (!effectiveBaseUrl) {
+        json(res, 400, { error: "No base URL for custom provider" });
+        return;
+      }
+      llm.registerCustomProviders({ [provider]: { baseUrl: effectiveBaseUrl, apiKey: key ?? "", displayName: cpCfg.displayName || provider, enabled: true } });
+    }
+
     const start = performance.now();
     const response = await llm.call({
-      provider: provider as "claude" | "gpt" | "gemini",
-      model: model || getDefaultModel(provider),
+      provider,
+      model: model || (isCustomProvider ? config.customProviders[provider].model : getDefaultModel(provider)),
       systemPrompt: "You are a test assistant.",
       messages: [{ role: "user", content: "Reply with just the word: OK" }],
       maxTokens: 10,

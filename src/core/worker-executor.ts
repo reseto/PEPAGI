@@ -23,7 +23,7 @@ const MAX_AGENT_TIMEOUT_MS = 600_000;
 
 const logger = new Logger("WorkerExecutor");
 
-const AGENT_STRENGTHS: Record<AgentProvider, string> = {
+const AGENT_STRENGTHS: Record<string, string> = {
   claude: "Deep reasoning, code generation, analysis, nuanced understanding",
   gpt: "Structured output, broad knowledge, instruction following",
   gemini: "Long context processing, multimodal analysis, speed",
@@ -221,7 +221,7 @@ export class WorkerExecutor {
 
       // Claude runs in agentic mode with real tools; others (GPT, Gemini, Ollama) are text-only.
       const useAgenticMode = agent === "claude";
-      const systemPrompt = buildWorkerSystemPrompt(task.title, AGENT_STRENGTHS[agent], useAgenticMode, this.profile);
+      const systemPrompt = buildWorkerSystemPrompt(task.title, AGENT_STRENGTHS[agent] ?? "Custom OpenAI-compatible provider", useAgenticMode, this.profile);
 
       try {
         logger.info(`executeWorkerTask: calling LLM`, { taskId: task.id, agent, model: agentProfile.model, agenticMode: useAgenticMode, agenticMaxTurns, maxTokens, timeoutSec: timeoutMs / 1000 });

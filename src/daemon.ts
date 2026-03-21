@@ -72,8 +72,12 @@ async function main(): Promise<void> {
   // Boot core services
   const llm = new LLMProvider();
   // Configure LLM with the user's chosen provider so quickCall() respects it
-  const mgrProvider = config.managerProvider as "claude" | "gpt" | "gemini";
+  const mgrProvider = config.managerProvider;
   llm.configure(mgrProvider, config.managerModel, getCheapModel(mgrProvider));
+  // Register custom OpenAI-compatible providers (Deepinfra, Kie.ai, etc.)
+  if (config.customProviders) {
+    llm.registerCustomProviders(config.customProviders);
+  }
   const pool = new AgentPool(config);
   const guard = new SecurityGuard(config);
   const taskStore = new TaskStore();

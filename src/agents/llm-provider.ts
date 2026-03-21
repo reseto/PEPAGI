@@ -36,7 +36,7 @@ export interface ToolCall {
 }
 
 export interface LLMCallOptions {
-  provider: "claude" | "gpt" | "gemini" | "ollama" | "lmstudio";
+  provider: string;
   model: string;
   systemPrompt: string;
   messages: Array<{ role: "user" | "assistant"; content: string }>;
@@ -1566,6 +1566,112 @@ async function callClaudeSDKVision(
   }
 }
 
+// ─── Custom OpenAI-Compatible providers ──────────────────────────
+
+/** Call any OpenAI-compatible API endpoint (Deepinfra, Kie.ai, Together, etc.) */
+async function callOpenAICompatible(
+  opts: LLMCallOptions,
+  baseUrl: string,
+  providerName: string,
+  apiKey?: string,
+): Promise<LLMResponse> {
+  const start = performance.now();
+
+  // Strip provider prefix from model name (e.g. "deepinfra/kimi-k2.5" → "kimi-k2.5")
+  const modelName = opts.model.includes("/")
+    ? opts.model.replace(/^[^/]+\//, "")
+    : opts.model;
+
+  const messages = [
+    { role: "system" as const, content: opts.systemPrompt },
+    ...opts.messages,
+  ];
+
+  const body: Record<string, unknown> = {
+    model: modelName,
+    messages,
+    temperature: opts.temperature ?? 0.3,
+    max_tokens: opts.maxTokens ?? 4096,
+    stream: false,
+  };
+
+  if (opts.responseFormat === "json") {
+    body.response_format = { type: "json_object" };
+  }
+
+  if (opts.tools && opts.tools.length > 0) {
+    body.tools = opts.tools.map(t => ({
+      type: "function",
+      function: {
+        name: t.name,
+        description: t.description,
+        parameters: t.inputSchema,
+      },
+    }));
+  }
+
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  const effectiveKey = apiKey ?? opts.apiKey;
+  if (effectiveKey) {
+    headers["Authorization"] = `Bearer ${effectiveKey}`;
+  }
+
+  // Normalize base URL: strip trailing slash
+  const normalizedUrl = baseUrl.replace(/\/+$/, "");
+
+  const abortCtrl = new AbortController();
+  const timeout = setTimeout(() => abortCtrl.abort(), opts.timeoutMs ?? 60_000);
+  let res: Response;
+  try {
+    res = await fetch(`${normalizedUrl}/v1/chat/completions`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+      signal: abortCtrl.signal,
+    });
+  } catch (err) {
+    clearTimeout(timeout);
+    throw new LLMProviderError(
+      providerName, 0,
+      `${providerName} unreachable at ${normalizedUrl}: ${String(err)}`,
+      false,
+    );
+  }
+  clearTimeout(timeout);
+
+  if (!res.ok) {
+    const text = await res.text();
+    const retryable = res.status === 429 || res.status >= 500;
+    throw new LLMProviderError(providerName, res.status, `${providerName} API error: ${text}`, retryable);
+  }
+
+  const data = await res.json() as {
+    choices?: Array<{
+      message?: {
+        content?: string;
+        tool_calls?: Array<{ id: string; function: { name: string; arguments: string } }>;
+      };
+    }>;
+    usage?: { prompt_tokens?: number; completion_tokens?: number };
+    model?: string;
+  };
+
+  const latencyMs = performance.now() - start;
+  const choice = data.choices?.[0];
+  const content = choice?.message?.content ?? "";
+  const inputTokens = data.usage?.prompt_tokens ?? Math.ceil((opts.systemPrompt.length + JSON.stringify(opts.messages).length) / 4);
+  const outputTokens = data.usage?.completion_tokens ?? Math.ceil(content.length / 4);
+  const cost = calculateCost(opts.model, inputTokens, outputTokens);
+
+  const toolCalls: ToolCall[] = (choice?.message?.tool_calls ?? []).map(tc => ({
+    id: tc.id,
+    name: tc.function.name,
+    input: (() => { try { return JSON.parse(tc.function.arguments) as Record<string, unknown>; } catch { return {}; } })(),
+  }));
+
+  return { content, toolCalls, usage: { inputTokens, outputTokens }, cost, model: data.model ?? opts.model, latencyMs };
+}
+
 // ─── Ollama (local models) ─────────────────────────────────────
 
 /** Default Ollama API base URL — override with OLLAMA_BASE_URL env var */
@@ -1830,21 +1936,41 @@ async function transcribeWithLocalWhisper(audioBuffer: Buffer, language: string)
 
 export class LLMProvider {
   /** Default provider for quickCall — set via configure() */
-  private _defaultProvider: "claude" | "gpt" | "gemini" | "ollama" | "lmstudio" = "claude";
+  private _defaultProvider: string = "claude";
   /** Default model for quickCall — set via configure() */
   private _defaultModel = "claude-opus-4-6";
   /** Cheap model for auxiliary calls — set via configure() */
   private _cheapModel = "claude-haiku-4-5";
+  /** Custom OpenAI-compatible providers registered at runtime */
+  private _customProviders = new Map<string, { baseUrl: string; apiKey: string; displayName: string }>();
 
   /**
    * Configure default provider/model for quick calls.
    * Should be called after config is loaded — typically in daemon.ts or cli.ts.
    */
-  configure(provider: "claude" | "gpt" | "gemini" | "ollama" | "lmstudio", model: string, cheapModel: string): void {
+  configure(provider: string, model: string, cheapModel: string): void {
     this._defaultProvider = provider;
     this._defaultModel = model;
     this._cheapModel = cheapModel;
     logger.info(`LLMProvider configured: provider=${provider}, model=${model}, cheap=${cheapModel}`);
+  }
+
+  /**
+   * Register custom OpenAI-compatible providers from config.
+   * Call after configure() in daemon.ts / cli.ts.
+   */
+  registerCustomProviders(providers: Record<string, { baseUrl: string; apiKey: string; displayName: string; enabled: boolean }>): void {
+    for (const [name, cfg] of Object.entries(providers)) {
+      if (cfg.enabled && cfg.baseUrl) {
+        this._customProviders.set(name, { baseUrl: cfg.baseUrl, apiKey: cfg.apiKey, displayName: cfg.displayName || name });
+        logger.info(`Custom provider registered: ${name} → ${cfg.baseUrl}`);
+      }
+    }
+  }
+
+  /** Get registered custom providers (for test-agent, etc.) */
+  getCustomProviders(): Map<string, { baseUrl: string; apiKey: string; displayName: string }> {
+    return this._customProviders;
   }
 
   /** Get the currently configured default provider */
@@ -1871,8 +1997,14 @@ export class LLMProvider {
           return callOllama(opts);
         case "lmstudio":
           return callLMStudio(opts);
-        default:
+        default: {
+          // Check if it's a registered custom OpenAI-compatible provider
+          const custom = this._customProviders.get(opts.provider);
+          if (custom) {
+            return callOpenAICompatible(opts, custom.baseUrl, custom.displayName || opts.provider, custom.apiKey || undefined);
+          }
           throw new LLMProviderError("unknown", 400, `Unknown provider: ${String(opts.provider)}`, false);
+        }
       }
     }, opts.provider);
   }

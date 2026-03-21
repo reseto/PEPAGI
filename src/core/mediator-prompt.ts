@@ -119,14 +119,14 @@ You MUST respond with ONLY valid JSON matching this schema (no other text):
     {
       "title": "Subtask name",
       "description": "What this subtask should accomplish",
-      "suggestedAgent": "claude" | "gpt" | "gemini" | "ollama" | "lmstudio" | null,
+      "suggestedAgent": "claude" | "gpt" | "gemini" | "ollama" | "lmstudio" | "<custom-provider-name>" | null,
       "priority": "critical" | "high" | "medium" | "low"
     }
   ],
 
   // For action="assign":
   "assignment": {
-    "agent": "claude" | "gpt" | "gemini" | "ollama" | "lmstudio",
+    "agent": "claude" | "gpt" | "gemini" | "ollama" | "lmstudio" | "<custom-provider-name>",
     "reason": "Why this agent is best for this task",
     "prompt": "The complete prompt to send to the worker agent"
   },

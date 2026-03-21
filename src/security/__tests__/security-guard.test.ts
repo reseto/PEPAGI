@@ -35,6 +35,7 @@ const mockConfig: PepagiConfig = {
     requireApproval: ["file_delete", "file_write_system", "network_external"],
   },
   queue: { maxConcurrentTasks: 4, taskTimeoutMs: 120_000 },
+  customProviders: {},
   consciousness: { profile: "STANDARD" as const, enabled: true },
   web: { enabled: false, port: 3100 },
 };

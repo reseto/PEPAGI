@@ -89,7 +89,7 @@ function repairTruncatedJson(text: string): string {
 const SubtaskSchema = z.object({
   title: z.string(),
   description: z.string(),
-  suggestedAgent: z.enum(["claude", "gpt", "gemini", "ollama", "lmstudio"]).nullable(),
+  suggestedAgent: z.string().nullable(),
   priority: z.enum(["critical", "high", "medium", "low"]),
 });
 
@@ -100,7 +100,7 @@ const MediatorDecisionSchema = z.object({
   subtasks: z.array(SubtaskSchema).optional(),
   // OPUS: must include all AgentProvider values — ollama/lmstudio were missing
   assignment: z.object({
-    agent: z.enum(["claude", "gpt", "gemini", "ollama", "lmstudio"]),
+    agent: z.string(),
     reason: z.string(),
     prompt: z.string(),
   }).optional(),
@@ -537,21 +537,27 @@ export class Mediator {
 
     // Build fallback chain: primary provider first, then others.
     // Each provider uses its OWN configured model (never mix provider+model from another).
-    const primaryProvider = (this.config.managerProvider ?? "claude") as "claude" | "gpt" | "gemini";
-    const allProviders: Array<{ provider: "claude" | "gpt" | "gemini"; model: string }> = [
+    const primaryProvider = this.config.managerProvider ?? "claude";
+    const allProviders: Array<{ provider: string; model: string }> = [
       { provider: "claude", model: this.config.agents.claude.model },
       { provider: "gpt",    model: this.config.agents.gpt.model },
       { provider: "gemini", model: this.config.agents.gemini.model },
     ];
+    // Add enabled custom providers to the fallback chain
+    const customProviders = this.config.customProviders ?? {};
+    for (const [name, cpCfg] of Object.entries(customProviders)) {
+      if (cpCfg.enabled && cpCfg.baseUrl) {
+        allProviders.push({ provider: name, model: cpCfg.model });
+      }
+    }
     // Primary provider: use managerModel (config ensures it matches the provider)
-    const primaryEntry = allProviders.find(p => p.provider === primaryProvider)!;
-    if (this.config.managerModel) {
+    const primaryEntry = allProviders.find(p => p.provider === primaryProvider);
+    if (primaryEntry && this.config.managerModel) {
       primaryEntry.model = this.config.managerModel;
     }
-    const providerChain = [
-      primaryEntry,
-      ...allProviders.filter(p => p.provider !== primaryProvider),
-    ];
+    const providerChain = primaryEntry
+      ? [primaryEntry, ...allProviders.filter(p => p.provider !== primaryProvider)]
+      : allProviders;
 
     for (const { provider, model } of providerChain) {
       // Skip unavailable or rate-limited providers (primary is always tried unless rate-limited)

@@ -4,7 +4,7 @@
 
 export interface ModelPricing {
   model: string;
-  provider: "claude" | "gpt" | "gemini" | "ollama" | "lmstudio";
+  provider: string;
   inputCostPer1M: number;   // USD per 1M input tokens
   outputCostPer1M: number;  // USD per 1M output tokens
   contextWindow: number;    // max context tokens
@@ -58,6 +58,17 @@ export function calculateCost(model: string, inputTokens: number, outputTokens: 
  */
 export function getPricing(model: string): ModelPricing | undefined {
   return PRICING_MAP.get(model);
+}
+
+/**
+ * Register custom model pricing at runtime (e.g. for custom OpenAI-compatible providers).
+ * Overwrites existing entries for the same model name.
+ */
+export function registerCustomPricing(entries: ModelPricing[]): void {
+  for (const entry of entries) {
+    PRICING.push(entry);
+    PRICING_MAP.set(entry.model, entry);
+  }
 }
 
 /** Cheapest available model for quick/simulation tasks */
