@@ -145,6 +145,46 @@ export class WorkerExecutor {
       .map(([taskId, e]) => ({ taskId, agent: e.agent, startedAt: e.startedAt }));
   }
 
+  /** Build OpenAI-compatible tool definitions from ToolRegistry for non-Claude agentic mode */
+  private getToolDefinitions(): import("../agents/llm-provider.js").ToolDefinition[] {
+    // Core tools for agentic work — matches what Claude CLI gets
+    const coreTools = ["bash", "read_file", "write_file", "list_directory", "web_fetch", "web_search", "download_file", "github"];
+    return this.tools.getAll()
+      .filter(t => coreTools.includes(t.name))
+      .map(t => ({
+        name: t.name,
+        description: t.description,
+        inputSchema: this.getToolSchema(t.name),
+      }));
+  }
+
+  /** Get JSON Schema for a tool's parameters */
+  private getToolSchema(name: string): Record<string, unknown> {
+    const schemas: Record<string, Record<string, unknown>> = {
+      bash: { type: "object", properties: { command: { type: "string", description: "Shell command to execute" } }, required: ["command"] },
+      read_file: { type: "object", properties: { path: { type: "string", description: "File path to read" } }, required: ["path"] },
+      write_file: { type: "object", properties: { path: { type: "string", description: "File path to write" }, content: { type: "string", description: "Content to write" } }, required: ["path", "content"] },
+      list_directory: { type: "object", properties: { path: { type: "string", description: "Directory path to list (default: .)" } } },
+      web_fetch: { type: "object", properties: { url: { type: "string", description: "URL to fetch" } }, required: ["url"] },
+      web_search: { type: "object", properties: { query: { type: "string", description: "Search query" } }, required: ["query"] },
+      download_file: { type: "object", properties: { url: { type: "string", description: "URL to download" }, filename: { type: "string", description: "Optional output filename" } }, required: ["url"] },
+      github: { type: "object", properties: { action: { type: "string", description: "GitHub action (list_repos, get_repo, create_issue, list_issues, search_code)" }, owner: { type: "string" }, repo: { type: "string" }, query: { type: "string" }, title: { type: "string" }, body: { type: "string" } }, required: ["action"] },
+    };
+    return schemas[name] ?? { type: "object", properties: {} };
+  }
+
+  /** Create a tool executor callback for the agentic loop */
+  private createToolExecutor(): (toolName: string, args: Record<string, unknown>, taskId: string) => Promise<{ success: boolean; output: string; error?: string }> {
+    return async (toolName: string, args: Record<string, unknown>, taskId: string) => {
+      // Convert args to Record<string, string> as expected by ToolRegistry
+      const stringArgs: Record<string, string> = {};
+      for (const [k, v] of Object.entries(args)) {
+        stringArgs[k] = typeof v === "string" ? v : JSON.stringify(v);
+      }
+      return this.tools.execute(toolName, stringArgs, taskId, this.guard);
+    };
+  }
+
   /**
    * Execute a task on a worker agent.
    * @param task - The task to execute
@@ -219,14 +259,21 @@ export class WorkerExecutor {
         }
       }, effectiveTimeout);
 
-      // Claude runs in agentic mode with real tools; others (GPT, Gemini, Ollama) are text-only.
-      const useAgenticMode = agent === "claude";
+      // Agentic mode: Claude uses built-in CLI/SDK tools. Other providers with supportsTools
+      // use the OpenAI function-calling loop via toolExecutor callback.
+      const useAgenticMode = agent === "claude" || (agentProfile.supportsTools && agenticMaxTurns > 0);
       const agentStrength = AGENT_STRENGTHS[agent] ?? agentProfile.displayName ?? "Custom OpenAI-compatible provider";
       const systemPrompt = buildWorkerSystemPrompt(task.title, agentStrength, useAgenticMode, this.profile);
 
       try {
         logger.info(`executeWorkerTask: calling LLM`, { taskId: task.id, agent, model: agentProfile.model, agenticMode: useAgenticMode, agenticMaxTurns, maxTokens, timeoutSec: timeoutMs / 1000 });
         eventBus.emit({ type: "mediator:thinking", taskId: task.id, thought: `Calling ${agent}/${agentProfile.model} (agentic=${useAgenticMode}, turns=${agenticMaxTurns}, timeout=${timeoutMs / 1000}s)...` });
+
+        // For non-Claude providers with tool support, pass tool definitions and executor
+        // so the OpenAI-compatible agentic loop can use PEPAGI's ToolRegistry.
+        const isNonClaudeAgentic = useAgenticMode && agent !== "claude";
+        const toolDefs = isNonClaudeAgentic ? this.getToolDefinitions() : undefined;
+        const toolExec = isNonClaudeAgentic ? this.createToolExecutor() : undefined;
 
         const response = await this.llm.call({
           provider: agent,
@@ -239,6 +286,8 @@ export class WorkerExecutor {
           taskId: task.id,
           abortController,
           timeoutMs,
+          tools: toolDefs,
+          toolExecutor: toolExec,
         });
         clearTimeout(timeoutId);
 

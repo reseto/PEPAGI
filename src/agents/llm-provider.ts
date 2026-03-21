@@ -55,6 +55,12 @@ export interface LLMCallOptions {
   abortController?: AbortController;
   /** Timeout in ms for the entire execution — used by CLI spawn and REST API loop */
   timeoutMs?: number;
+  /**
+   * Tool executor callback — enables agentic tool loop for non-Claude providers.
+   * When the LLM returns tool_calls, this function executes them and returns results.
+   * The loop continues until the LLM responds with text only (no tool_calls).
+   */
+  toolExecutor?: (toolName: string, args: Record<string, unknown>, taskId: string) => Promise<{ success: boolean; output: string; error?: string }>;
 }
 
 export interface LLMResponse {
@@ -1660,31 +1666,149 @@ async function callOpenAICompatible(
     throw new LLMProviderError(providerName, res.status, `${providerName} API error: ${text}`, retryable);
   }
 
-  const data = await res.json() as {
+  type OAIResponse = {
     choices?: Array<{
       message?: {
         content?: string;
-        tool_calls?: Array<{ id: string; function: { name: string; arguments: string } }>;
+        role?: string;
+        tool_calls?: Array<{ id: string; type: string; function: { name: string; arguments: string } }>;
       };
+      finish_reason?: string;
     }>;
     usage?: { prompt_tokens?: number; completion_tokens?: number };
     model?: string;
   };
 
-  const latencyMs = performance.now() - start;
-  const choice = data.choices?.[0];
-  const content = choice?.message?.content ?? "";
-  const inputTokens = data.usage?.prompt_tokens ?? Math.ceil((opts.systemPrompt.length + JSON.stringify(opts.messages).length) / 4);
-  const outputTokens = data.usage?.completion_tokens ?? Math.ceil(content.length / 4);
-  const cost = calculateCost(opts.model, inputTokens, outputTokens);
+  const data = await res.json() as OAIResponse;
 
-  const toolCalls: ToolCall[] = (choice?.message?.tool_calls ?? []).map(tc => ({
+  const choice = data.choices?.[0];
+  const firstContent = choice?.message?.content ?? "";
+  let totalInputTokens = data.usage?.prompt_tokens ?? Math.ceil((opts.systemPrompt.length + JSON.stringify(opts.messages).length) / 4);
+  let totalOutputTokens = data.usage?.completion_tokens ?? Math.ceil(firstContent.length / 4);
+
+  const firstToolCalls = choice?.message?.tool_calls ?? [];
+
+  // ── Agentic tool loop for OpenAI-compatible providers ──────────
+  // If the LLM returned tool_calls AND we have a toolExecutor, execute them
+  // and send results back, looping until the LLM responds with text only.
+  if (firstToolCalls.length > 0 && opts.toolExecutor && opts.agenticMode) {
+    const maxTurns = opts.agenticMaxTurns ?? 20;
+    const taskId = opts.taskId ?? "unknown";
+
+    // Build conversation for multi-turn tool loop
+    const loopMessages: Array<Record<string, unknown>> = [
+      { role: "system", content: opts.systemPrompt },
+      ...opts.messages.map(m => ({ role: m.role, content: m.content })),
+      // Assistant's response with tool_calls
+      { role: "assistant", content: firstContent || null, tool_calls: firstToolCalls },
+    ];
+
+    let currentToolCalls = firstToolCalls;
+    let finalContent = firstContent;
+    const allToolNames: string[] = [];
+
+    for (let turn = 0; turn < maxTurns && currentToolCalls.length > 0; turn++) {
+      // Execute all tool calls
+      for (const tc of currentToolCalls) {
+        const toolName = tc.function.name;
+        let toolArgs: Record<string, unknown>;
+        try { toolArgs = JSON.parse(tc.function.arguments) as Record<string, unknown>; } catch { toolArgs = {}; }
+
+        allToolNames.push(toolName);
+        if (taskId !== "unknown") {
+          eventBus.emit({ type: "mediator:thinking", taskId, thought: `Tool: ${toolName}(${JSON.stringify(toolArgs).slice(0, 100)})` });
+        }
+
+        const result = await opts.toolExecutor(toolName, toolArgs, taskId);
+        const resultText = result.success ? result.output : `Error: ${result.error ?? "unknown"}`;
+
+        // Add tool result to conversation
+        loopMessages.push({
+          role: "tool",
+          tool_call_id: tc.id,
+          content: resultText.slice(0, 50_000), // cap tool output
+        });
+
+        if (taskId !== "unknown") {
+          eventBus.emit({ type: "mediator:thinking", taskId, thought: `${toolName} ${result.success ? "✓" : "✗"}` });
+        }
+      }
+
+      // Send conversation back to LLM for next turn
+      const nextBody: Record<string, unknown> = {
+        model: modelName,
+        messages: loopMessages,
+        temperature: opts.temperature ?? 0.3,
+        max_tokens: opts.maxTokens ?? 4096,
+        stream: false,
+      };
+      if (body.tools) nextBody.tools = body.tools;
+
+      const nextAbort = new AbortController();
+      const nextTimeout = setTimeout(() => nextAbort.abort(), opts.timeoutMs ?? 120_000);
+      let nextRes: Response;
+      try {
+        nextRes = await fetch(endpoint, {
+          method: "POST",
+          headers,
+          body: JSON.stringify(nextBody),
+          signal: nextAbort.signal,
+        });
+      } catch (err) {
+        clearTimeout(nextTimeout);
+        // On connection error, return what we have so far
+        break;
+      }
+      clearTimeout(nextTimeout);
+
+      if (!nextRes.ok) break; // Stop on API error
+
+      const nextData = await nextRes.json() as OAIResponse;
+      const nextChoice = nextData.choices?.[0];
+      totalInputTokens += nextData.usage?.prompt_tokens ?? 0;
+      totalOutputTokens += nextData.usage?.completion_tokens ?? 0;
+
+      currentToolCalls = nextChoice?.message?.tool_calls ?? [];
+      finalContent = nextChoice?.message?.content ?? finalContent;
+
+      // Add assistant response to conversation for next turn
+      if (currentToolCalls.length > 0) {
+        loopMessages.push({
+          role: "assistant",
+          content: nextChoice?.message?.content || null,
+          tool_calls: currentToolCalls,
+        });
+      }
+
+      if (taskId !== "unknown") {
+        eventBus.emit({ type: "mediator:thinking", taskId, thought: `Agent turn ${turn + 1}/${maxTurns} (${allToolNames.length} tool calls)` });
+      }
+    }
+
+    const latencyMs = performance.now() - start;
+    const cost = calculateCost(opts.model, totalInputTokens, totalOutputTokens);
+
+    return {
+      content: finalContent,
+      toolCalls: allToolNames.map((name, i) => ({ id: `tc-${i}`, name, input: {} })),
+      usage: { inputTokens: totalInputTokens, outputTokens: totalOutputTokens },
+      cost,
+      model: data.model ?? opts.model,
+      latencyMs,
+    };
+  }
+
+  // ── Non-agentic path (single call, text-only or no tool executor) ──
+  const latencyMs = performance.now() - start;
+  const cost = calculateCost(opts.model, totalInputTokens, totalOutputTokens);
+
+  const toolCalls: ToolCall[] = firstToolCalls.map(tc => ({
     id: tc.id,
     name: tc.function.name,
     input: (() => { try { return JSON.parse(tc.function.arguments) as Record<string, unknown>; } catch { return {}; } })(),
   }));
 
-  return { content, toolCalls, usage: { inputTokens, outputTokens }, cost, model: data.model ?? opts.model, latencyMs };
+  return { content: firstContent, toolCalls, usage: { inputTokens: totalInputTokens, outputTokens: totalOutputTokens }, cost, model: data.model ?? opts.model, latencyMs };
 }
 
 // ─── Ollama (local models) ─────────────────────────────────────
