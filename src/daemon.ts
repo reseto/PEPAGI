@@ -73,7 +73,8 @@ async function main(): Promise<void> {
   const llm = new LLMProvider();
   // Configure LLM with the user's chosen provider so quickCall() respects it
   const mgrProvider = config.managerProvider;
-  llm.configure(mgrProvider, config.managerModel, getCheapModel(mgrProvider, config.customProviders?.[mgrProvider]?.model));
+  const customCfg = config.customProviders?.[mgrProvider];
+  llm.configure(mgrProvider, config.managerModel, getCheapModel(mgrProvider, customCfg?.model, customCfg?.cheapModel));
   // Register custom OpenAI-compatible providers (Deepinfra, Kie.ai, etc.)
   if (config.customProviders) {
     llm.registerCustomProviders(config.customProviders);

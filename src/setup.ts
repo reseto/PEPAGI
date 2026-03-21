@@ -46,6 +46,7 @@ interface CustomProviderEntry {
   baseUrl: string;
   apiKey: string;
   model: string;
+  cheapModel: string;
   enabled: boolean;
   inputCostPer1M: number;
   outputCostPer1M: number;
@@ -414,6 +415,7 @@ async function setup(): Promise<void> {
         const baseUrl = await ask(`  Base URL (např. https://api.deepinfra.com/v1) [${existing?.baseUrl || ""}]: `) || existing?.baseUrl || "";
         const apiKey = await ask(`  API klíč [${existing?.apiKey ? "***zachovat***" : ""}]: `) || existing?.apiKey || "";
         const model = await ask(`  Model (např. meta-llama/Llama-3.3-70B-Instruct) [${existing?.model || ""}]: `) || existing?.model || "";
+        const cheapModel = await ask(`  Cheap model pro paměť/klasifikaci (Enter = stejný jako hlavní) [${existing?.cheapModel || ""}]: `) || existing?.cheapModel || "";
 
         let inputCost = existing?.inputCostPer1M ?? 0;
         let outputCost = existing?.outputCostPer1M ?? 0;
@@ -431,6 +433,7 @@ async function setup(): Promise<void> {
           baseUrl,
           apiKey,
           model,
+          cheapModel,
           enabled: !!(baseUrl && apiKey),
           inputCostPer1M: inputCost,
           outputCostPer1M: outputCost,

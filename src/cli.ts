@@ -88,7 +88,8 @@ async function boot() {
   const config = await loadConfig();
   const llm = new LLMProvider();
   const mgrProvider = config.managerProvider;
-  llm.configure(mgrProvider, config.managerModel, getCheapModel(mgrProvider, config.customProviders?.[mgrProvider]?.model));
+  const customCfg = config.customProviders?.[mgrProvider];
+  llm.configure(mgrProvider, config.managerModel, getCheapModel(mgrProvider, customCfg?.model, customCfg?.cheapModel));
   // Register custom OpenAI-compatible providers
   if (config.customProviders) {
     llm.registerCustomProviders(config.customProviders);

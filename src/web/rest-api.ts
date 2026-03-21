@@ -284,7 +284,8 @@ export async function handlePutConfig(deps: RestDeps, req: IncomingMessage, res:
     // Hot-reload: reconfigure LLM provider with new manager settings
     if (deps.llm) {
       const provider = merged.managerProvider;
-      deps.llm.configure(provider, merged.managerModel, getCheapModel(provider, merged.customProviders?.[provider]?.model));
+      const cc = merged.customProviders?.[provider];
+      deps.llm.configure(provider, merged.managerModel, getCheapModel(provider, cc?.model, cc?.cheapModel));
       // Re-register custom providers on hot-reload
       if (merged.customProviders) {
         deps.llm.registerCustomProviders(merged.customProviders);

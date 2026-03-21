@@ -99,9 +99,11 @@ const DEFAULT_MODELS: Record<string, string> = {
  * Used for auxiliary operations (difficulty estimation, simulation, memory, reflection).
  * @param provider - Provider name (built-in or custom)
  * @param fallbackModel - Model to use if provider has no cheap model mapping (e.g. custom provider's own model)
+ * @param cheapModel - Explicitly configured cheap model (from customProviders config)
  */
-export function getCheapModel(provider: string, fallbackModel?: string): string {
-  return CHEAP_MODELS[provider] ?? fallbackModel ?? CHEAP_MODELS["claude"]!;
+export function getCheapModel(provider: string, fallbackModel?: string, cheapModel?: string): string {
+  // Explicit cheapModel from config wins, then built-in mapping, then custom provider's main model, then Claude fallback
+  return cheapModel || (CHEAP_MODELS[provider] ?? fallbackModel ?? CHEAP_MODELS["claude"]!);
 }
 
 /**

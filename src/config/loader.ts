@@ -112,6 +112,8 @@ export const CustomProviderConfigSchema = z.object({
   baseUrl: z.string().default(""),
   apiKey: z.string().default(""),
   model: z.string().default(""),
+  /** Cheap model for auxiliary calls (memory, classification, simulation). Falls back to main model if empty. */
+  cheapModel: z.string().default(""),
   enabled: z.boolean().default(true),
   maxOutputTokens: z.number().default(4096),
   temperature: z.number().min(0).max(2).default(0.3),
