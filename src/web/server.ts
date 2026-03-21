@@ -55,6 +55,7 @@ export class WebDashboardServer {
   private bridge: StateBridge;
   private publicDir: string;
   private readonly port: number;
+  private readonly host: string;
   private readonly startTime: number;
   private pool: import("../agents/agent-pool.js").AgentPool | null;
   private llm: import("../agents/llm-provider.js").LLMProvider | null;
@@ -62,11 +63,13 @@ export class WebDashboardServer {
   constructor(
     private readonly taskStore: TaskStore,
     private readonly mediator: Mediator,
-    opts?: { port?: number; pool?: import("../agents/agent-pool.js").AgentPool; llm?: import("../agents/llm-provider.js").LLMProvider },
+    opts?: { port?: number; host?: string; pool?: import("../agents/agent-pool.js").AgentPool; llm?: import("../agents/llm-provider.js").LLMProvider },
   ) {
     this.pool = opts?.pool ?? null;
     this.llm = opts?.llm ?? null;
     this.port = opts?.port ?? 3100;
+    // PEPAGI_HOST env var overrides config — useful for Docker without config changes
+    this.host = process.env.PEPAGI_HOST ?? opts?.host ?? "127.0.0.1";
     this.bridge = new StateBridge();
     this.publicDir = resolvePublicDir();
     this.startTime = Date.now();
@@ -86,8 +89,17 @@ export class WebDashboardServer {
     };
 
     this.httpServer = createServer((req, res) => {
-      // CORS for localhost
-      res.setHeader("Access-Control-Allow-Origin", "http://localhost:" + this.port);
+      // CORS — allow the origin matching the actual bind host
+      const requestOrigin = req.headers["origin"];
+      const allowedOrigins = [
+        `http://localhost:${this.port}`,
+        `http://127.0.0.1:${this.port}`,
+        ...(this.host === "0.0.0.0" && requestOrigin ? [requestOrigin] : []),
+      ];
+      const corsOrigin = (requestOrigin && allowedOrigins.includes(requestOrigin))
+        ? requestOrigin
+        : `http://localhost:${this.port}`;
+      res.setHeader("Access-Control-Allow-Origin", corsOrigin);
       res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, OPTIONS");
       res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
       if (req.method === "OPTIONS") { res.writeHead(204); res.end(); return; }
@@ -124,8 +136,8 @@ export class WebDashboardServer {
     });
 
     return new Promise<void>((resolve, reject) => {
-      this.httpServer!.listen(this.port, "127.0.0.1", () => {
-        logger.info("Web dashboard started", { port: this.port, publicDir: this.publicDir });
+      this.httpServer!.listen(this.port, this.host, () => {
+        logger.info("Web dashboard started", { port: this.port, host: this.host, publicDir: this.publicDir });
         resolve();
       });
       this.httpServer!.on("error", (err) => {

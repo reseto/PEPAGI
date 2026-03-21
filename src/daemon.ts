@@ -73,7 +73,7 @@ async function main(): Promise<void> {
   const llm = new LLMProvider();
   // Configure LLM with the user's chosen provider so quickCall() respects it
   const mgrProvider = config.managerProvider;
-  llm.configure(mgrProvider, config.managerModel, getCheapModel(mgrProvider));
+  llm.configure(mgrProvider, config.managerModel, getCheapModel(mgrProvider, config.customProviders?.[mgrProvider]?.model));
   // Register custom OpenAI-compatible providers (Deepinfra, Kie.ai, etc.)
   if (config.customProviders) {
     llm.registerCustomProviders(config.customProviders);
@@ -98,7 +98,7 @@ async function main(): Promise<void> {
   // Advanced meta services
   const skillSynthesizer = new SkillSynthesizer(llm, memory.procedural);
   const adversarialTester = new AdversarialTester(llm, guard);
-  const mcpServer = new MCPServer(mediator, taskStore, memory, skillRegistry, { port: 3099 });
+  const mcpServer = new MCPServer(mediator, taskStore, memory, skillRegistry, { port: 3099, host: config.web?.host });
   const predictiveContext = new PredictiveContextLoader(llm, memory);
 
   // Wire predictive context into mediator
@@ -226,7 +226,7 @@ async function main(): Promise<void> {
   // Start Web Dashboard (browser UI on localhost:3100)
   let webDashboard: WebDashboardServer | null = null;
   if (config.web?.enabled !== false) {
-    webDashboard = new WebDashboardServer(taskStore, mediator, { port: config.web?.port ?? 3100, pool, llm });
+    webDashboard = new WebDashboardServer(taskStore, mediator, { port: config.web?.port ?? 3100, host: config.web?.host, pool, llm });
     try {
       await webDashboard.start();
       logger.info("Web dashboard started", { port: config.web?.port ?? 3100 });
@@ -286,8 +286,9 @@ async function main(): Promise<void> {
   if (telegram.enabled) console.log(chalk.cyan("  📱 Telegram: aktivní"));
   if (whatsapp.enabled) console.log(chalk.cyan("  💬 WhatsApp: aktivní"));
   if (discord.enabled) console.log(chalk.cyan("  🎮 Discord: aktivní"));
-  console.log(chalk.cyan("  🔌 MCP server: http://localhost:3099"));
-  if (webDashboard) console.log(chalk.cyan(`  🌐 Web dashboard: http://localhost:${config.web?.port ?? 3100}`));
+  const bindHost = process.env.PEPAGI_HOST ?? config.web?.host ?? "127.0.0.1";
+  console.log(chalk.cyan(`  🔌 MCP server: http://${bindHost}:3099`));
+  if (webDashboard) console.log(chalk.cyan(`  🌐 Web dashboard: http://${bindHost}:${config.web?.port ?? 3100}`));
   console.log(chalk.gray(`\n  PID: ${process.pid} (${PID_FILE})`));
   console.log(chalk.gray("  Logy: ~/.pepagi/logs/"));
   console.log(chalk.gray("  Ctrl+C pro zastavení\n"));

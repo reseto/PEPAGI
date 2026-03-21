@@ -88,7 +88,7 @@ async function boot() {
   const config = await loadConfig();
   const llm = new LLMProvider();
   const mgrProvider = config.managerProvider;
-  llm.configure(mgrProvider, config.managerModel, getCheapModel(mgrProvider));
+  llm.configure(mgrProvider, config.managerModel, getCheapModel(mgrProvider, config.customProviders?.[mgrProvider]?.model));
   // Register custom OpenAI-compatible providers
   if (config.customProviders) {
     llm.registerCustomProviders(config.customProviders);
@@ -282,7 +282,7 @@ async function showProposals(): Promise<void> {
   const proposalLlm = new LLMProvider();
   const proposalConfig = await loadConfig();
   const proposalProvider = proposalConfig.managerProvider;
-  proposalLlm.configure(proposalProvider, proposalConfig.managerModel, getCheapModel(proposalProvider));
+  proposalLlm.configure(proposalProvider, proposalConfig.managerModel, getCheapModel(proposalProvider, proposalConfig.customProviders?.[proposalProvider]?.model));
   if (proposalConfig.customProviders) {
     proposalLlm.registerCustomProviders(proposalConfig.customProviders);
   }

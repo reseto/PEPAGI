@@ -1577,10 +1577,9 @@ async function callOpenAICompatible(
 ): Promise<LLMResponse> {
   const start = performance.now();
 
-  // Strip provider prefix from model name (e.g. "deepinfra/kimi-k2.5" → "kimi-k2.5")
-  const modelName = opts.model.includes("/")
-    ? opts.model.replace(/^[^/]+\//, "")
-    : opts.model;
+  // Send the model name as-is — custom providers expect the full model identifier
+  // (e.g. "moonshotai/Kimi-K2.5" on Deepinfra, "gpt-4o" on OpenAI-compatible APIs)
+  const modelName = opts.model;
 
   const messages = [
     { role: "system" as const, content: opts.systemPrompt },
@@ -1616,14 +1615,30 @@ async function callOpenAICompatible(
     headers["Authorization"] = `Bearer ${effectiveKey}`;
   }
 
-  // Normalize base URL: strip trailing slash
+  // Normalize base URL: strip trailing slash, then build endpoint URL.
+  // Smart path detection — handle all common base URL formats:
+  //   https://api.example.com          → append /v1/chat/completions
+  //   https://api.example.com/v1       → append /chat/completions
+  //   https://api.example.com/v1/openai → append /chat/completions
+  //   https://…/v1/chat/completions    → use as-is
   const normalizedUrl = baseUrl.replace(/\/+$/, "");
+  let endpoint: string;
+  if (/\/v1\/chat\/completions$/i.test(normalizedUrl)) {
+    // Already a full endpoint URL — use as-is
+    endpoint = normalizedUrl;
+  } else if (/\/v1(\/[^/]*)*$/i.test(normalizedUrl)) {
+    // Has /v1 or /v1/something (e.g. /v1, /v1/openai) — append /chat/completions
+    endpoint = `${normalizedUrl}/chat/completions`;
+  } else {
+    // No /v1 in path — append /v1/chat/completions
+    endpoint = `${normalizedUrl}/v1/chat/completions`;
+  }
 
   const abortCtrl = new AbortController();
   const timeout = setTimeout(() => abortCtrl.abort(), opts.timeoutMs ?? 60_000);
   let res: Response;
   try {
-    res = await fetch(`${normalizedUrl}/v1/chat/completions`, {
+    res = await fetch(endpoint, {
       method: "POST",
       headers,
       body: JSON.stringify(body),
@@ -1633,7 +1648,7 @@ async function callOpenAICompatible(
     clearTimeout(timeout);
     throw new LLMProviderError(
       providerName, 0,
-      `${providerName} unreachable at ${normalizedUrl}: ${String(err)}`,
+      `${providerName} unreachable at ${endpoint}: ${String(err)}`,
       false,
     );
   }

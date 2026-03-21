@@ -179,6 +179,8 @@ const ToolsCallParamsSchema = z.object({
 export interface MCPServerOptions {
   /** HTTP port. Default: 3099 */
   port?: number;
+  /** Bind address. Default: 127.0.0.1. Set to "0.0.0.0" for Docker. */
+  host?: string;
   /** Also listen on stdio. Default: false */
   stdio?: boolean;
 }
@@ -251,7 +253,7 @@ function isRateLimited(ip: string): boolean {
  * Transport: HTTP on `options.port` (default 3099) + optional stdio.
  * Protocol version: 2024-11-05.
  *
- * SEC-01: Binds on 127.0.0.1 only (localhost), not 0.0.0.0.
+ * SEC-01: Defaults to 127.0.0.1 (localhost). Configurable via options.host or PEPAGI_HOST env var.
  * SEC-01: Requires Bearer token if MCP_TOKEN env var is set.
  * SEC-01: Enforces per-IP rate limiting (60 req/min).
  */
@@ -362,10 +364,10 @@ export class MCPServer {
 
       this.httpServer.once("error", reject);
 
-      // SEC-01: Bind on 127.0.0.1 only — was "0.0.0.0" which exposed the server
-      // to any device on the LAN without any authentication.
-      this.httpServer.listen(port, "127.0.0.1", () => {
-        logger.info("MCP HTTP server listening", { port, host: "127.0.0.1" });
+      // SEC-01: Default bind 127.0.0.1 (safe). Override via options.host or PEPAGI_HOST env var for Docker.
+      const host = process.env.PEPAGI_HOST ?? this.options.host ?? "127.0.0.1";
+      this.httpServer.listen(port, host, () => {
+        logger.info("MCP HTTP server listening", { port, host });
         resolve();
       });
     });

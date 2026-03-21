@@ -103,6 +103,8 @@ const ConsciousnessConfigSchema = z.object({
 const WebDashboardConfigSchema = z.object({
   enabled: z.boolean().default(true),
   port: z.number().default(3100),
+  /** Bind address — "127.0.0.1" (default, safe) or "0.0.0.0" (Docker/remote). Override via PEPAGI_HOST env var. */
+  host: z.string().default("127.0.0.1"),
 });
 
 export const CustomProviderConfigSchema = z.object({
@@ -168,7 +170,7 @@ const PepagiConfigSchema = z.object({
   }).default({ maxConcurrentTasks: 4, taskTimeoutMs: 120_000 }),
   customProviders: z.record(z.string(), CustomProviderConfigSchema).default({}),
   consciousness: ConsciousnessConfigSchema.default({ profile: "MINIMAL", enabled: true }),
-  web: WebDashboardConfigSchema.default({ enabled: true, port: 3100 }),
+  web: WebDashboardConfigSchema.default({ enabled: true, port: 3100, host: "127.0.0.1" }),
 });
 
 export type PepagiConfig = z.infer<typeof PepagiConfigSchema>;
