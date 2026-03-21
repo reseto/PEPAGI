@@ -117,7 +117,11 @@ export type PepagiEvent =
   | { type: "security:session_violation"; userId: string; attempted: string }
   | { type: "security:consciousness_anomaly"; dimension: string; delta: number }
   | { type: "security:quarantine_entered"; reason: string }
-  | { type: "consciousness:qualia"; qualia: Record<string, number> };
+  | { type: "consciousness:qualia"; qualia: Record<string, number> }
+  // Self-healing events (L3 AI Emergency Recovery)
+  | { type: "self-heal:attempt"; tier: number; diagnosis: string; taskId?: string }
+  | { type: "self-heal:success"; tier: number; action: string }
+  | { type: "self-heal:failed"; tier: number; reason: string };
 
 // ─── Mediator Decision ───────────────────────────────────────
 export interface MediatorDecision {

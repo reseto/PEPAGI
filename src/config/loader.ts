@@ -109,6 +109,14 @@ const WebDashboardConfigSchema = z.object({
   authToken: z.string().default(""),
 });
 
+const SelfHealingConfigSchema = z.object({
+  enabled: z.boolean().default(true),
+  maxAttemptsPerHour: z.number().default(3),
+  cooldownMs: z.number().default(300_000), // 5 min between attempts
+  costCapPerAttempt: z.number().default(0.50),
+  allowCodeFixes: z.boolean().default(false), // Tier 2 is opt-in
+});
+
 const N8nConfigSchema = z.object({
   enabled: z.boolean().default(false),
   /** Base URL of n8n instance, e.g. "https://my-n8n.example.com" */
@@ -186,6 +194,7 @@ const PepagiConfigSchema = z.object({
   consciousness: ConsciousnessConfigSchema.default({ profile: "MINIMAL", enabled: true }),
   web: WebDashboardConfigSchema.default({ enabled: true, port: 3100, host: "127.0.0.1", authToken: "" }),
   n8n: N8nConfigSchema.default({ enabled: false, baseUrl: "", webhookPaths: [], apiKey: "" }),
+  selfHealing: SelfHealingConfigSchema.default({ enabled: true, maxAttemptsPerHour: 3, cooldownMs: 300_000, costCapPerAttempt: 0.50, allowCodeFixes: false }),
 });
 
 export type PepagiConfig = z.infer<typeof PepagiConfigSchema>;

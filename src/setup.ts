@@ -81,6 +81,7 @@ interface SetupConfig {
   };
   queue: { maxConcurrentTasks: number; taskTimeoutMs: number };
   n8n: { enabled: boolean; baseUrl: string; webhookPaths: string[]; apiKey: string };
+  selfHealing?: { enabled: boolean; maxAttemptsPerHour: number; cooldownMs: number; costCapPerAttempt: number; allowCodeFixes: boolean };
 }
 
 const DEFAULT_CONFIG: SetupConfig = {
@@ -584,6 +585,43 @@ async function setup(): Promise<void> {
       success(`n8n nastaven: ${baseUrl} (${paths.length} webhook paths)`);
     } else {
       success("n8n vypnut.");
+    }
+  }
+
+  // ─── KROK 9: Self-Healing ─────────────────────────────────
+
+  header("KROK 9: Self-Healing (volitelné)");
+  info("Autonomní diagnostika a oprava při selhání systému.");
+  info("Tier 1 (infrastruktura) je bezpečný a automatický.");
+  info("Tier 2 (kódové opravy) vyžaduje explicitní povolení.");
+  info("");
+
+  const shEnabled = config.selfHealing?.enabled ?? true;
+  const shCodeFixes = config.selfHealing?.allowCodeFixes ?? false;
+  info(`Stav: self-healing ${shEnabled ? chalk.green("zapnuto") : chalk.yellow("vypnuto")}, kódové opravy ${shCodeFixes ? chalk.green("povoleny") : chalk.gray("zakázány")}`);
+  info("");
+
+  const changeSH = await askYesNo("  Chceš změnit nastavení self-healing?", false);
+  if (changeSH) {
+    const enableSH = await askYesNo("  Povolit self-healing? (Tier 1 — bezpečné infra opravy)", true);
+    config.selfHealing = {
+      enabled: enableSH,
+      maxAttemptsPerHour: 3,
+      cooldownMs: 300_000,
+      costCapPerAttempt: 0.50,
+      allowCodeFixes: false,
+    };
+    if (enableSH) {
+      success("Self-healing Tier 1 zapnuto");
+      const enableCodeFixes = await askYesNo("  Povolit kódové opravy? (Tier 2 — na samostatném git branch, DOPORUČENO NE)", false);
+      config.selfHealing.allowCodeFixes = enableCodeFixes;
+      if (enableCodeFixes) {
+        warn("Tier 2 kódové opravy povoleny — opravy se nikdy nemerge automaticky.");
+      } else {
+        success("Tier 2 kódové opravy zakázány (bezpečnější volba).");
+      }
+    } else {
+      success("Self-healing vypnuto.");
     }
   }
 

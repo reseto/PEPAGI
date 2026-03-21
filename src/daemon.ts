@@ -52,6 +52,8 @@ import { costTracker } from "./security/cost-tracker.js";
 import { credentialLifecycle } from "./security/credential-lifecycle.js";
 // SECURITY: SEC-26 — Supply chain audit on startup
 import { verifyLockfile } from "./security/supply-chain.js";
+// L3 — AI Emergency Recovery (self-healing)
+import { SelfHealer } from "./meta/self-healer.js";
 
 const logger = new Logger("Daemon");
 const PID_FILE = join(PEPAGI_DATA_DIR, "daemon.pid");
@@ -285,6 +287,10 @@ async function main(): Promise<void> {
   // Start watchdog
   watchdog.start();
 
+  // Start self-healer (L3 AI Emergency Recovery)
+  const selfHealer = new SelfHealer(llm, taskStore, guard, config);
+  selfHealer.start();
+
   // Start goal manager (proactive cron-based tasks)
   await goalManager.start();
 
@@ -303,6 +309,7 @@ async function main(): Promise<void> {
   const shutdown = async (signal: string) => {
     console.log(chalk.yellow(`\n⏹  Daemon zastavuji (${signal})...`));
     watchdog.stop();
+    selfHealer.stop();
     goalManager.stop();
     // OPUS: clear the delayed start timer, idle-guarded interval, and stop the tester itself
     clearTimeout(adversarialStartTimer);

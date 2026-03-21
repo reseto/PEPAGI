@@ -39,6 +39,7 @@ const mockConfig: PepagiConfig = {
   consciousness: { profile: "STANDARD" as const, enabled: true },
   web: { enabled: false, port: 3100, host: "127.0.0.1", authToken: "" },
   n8n: { enabled: false, baseUrl: "", webhookPaths: [], apiKey: "" },
+  selfHealing: { enabled: false, maxAttemptsPerHour: 3, cooldownMs: 300_000, costCapPerAttempt: 0.50, allowCodeFixes: false },
 };
 
 describe("SecurityGuard.sanitize", () => {
