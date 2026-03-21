@@ -1641,7 +1641,11 @@ async function callOpenAICompatible(
   }
 
   const abortCtrl = new AbortController();
-  const timeout = setTimeout(() => abortCtrl.abort(), opts.timeoutMs ?? 60_000);
+  // Per-request timeout: minimum 120s regardless of overall budget timeout.
+  // opts.timeoutMs is the task-level budget (e.g. 60s for trivial), but a single API call
+  // to external providers (DeepInfra, OpenRouter) can take 30-90s with tool definitions.
+  const perRequestTimeout = Math.max(opts.timeoutMs ?? 120_000, 120_000);
+  const timeout = setTimeout(() => abortCtrl.abort(), perRequestTimeout);
   let res: Response;
   try {
     res = await fetch(endpoint, {
@@ -1652,10 +1656,13 @@ async function callOpenAICompatible(
     });
   } catch (err) {
     clearTimeout(timeout);
+    const isTimeout = err instanceof Error && err.name === "AbortError";
     throw new LLMProviderError(
       providerName, 0,
-      `${providerName} unreachable at ${endpoint}: ${String(err)}`,
-      false,
+      isTimeout
+        ? `${providerName} request timed out after ${perRequestTimeout / 1000}s at ${endpoint}`
+        : `${providerName} unreachable at ${endpoint}: ${String(err)}`,
+      isTimeout, // timeouts are retryable, connection errors are not
     );
   }
   clearTimeout(timeout);
@@ -1745,7 +1752,7 @@ async function callOpenAICompatible(
       if (body.tools) nextBody.tools = body.tools;
 
       const nextAbort = new AbortController();
-      const nextTimeout = setTimeout(() => nextAbort.abort(), opts.timeoutMs ?? 120_000);
+      const nextTimeout = setTimeout(() => nextAbort.abort(), perRequestTimeout);
       let nextRes: Response;
       try {
         nextRes = await fetch(endpoint, {
