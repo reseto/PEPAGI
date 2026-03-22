@@ -46,12 +46,32 @@ export interface Task {
   tags: string[];
 }
 
+// ─── Recovery Types ─────────────────────────────────────────
+export type RecoveryStatus = "RECOVERED" | "DEGRADED" | "ESCALATED";
+
+export interface RecoveryInfo {
+  status: RecoveryStatus;
+  actionsAttempted: string[];
+  degradedGaps?: string[];
+  escalationReason?: string;
+  nextAgentCanProceed: boolean;
+}
+
+export interface RecoveryLearning {
+  failurePattern: string;
+  rootCause: string;
+  solution: string;
+  preventionHint: string;
+}
+
 export interface TaskOutput {
   success: boolean;
   result: unknown;
   summary: string;
   artifacts: Artifact[];
   confidence: number;
+  recovery?: RecoveryInfo;
+  recoveryLearnings?: RecoveryLearning[];
 }
 
 export interface Artifact {
@@ -121,7 +141,9 @@ export type PepagiEvent =
   // Self-healing events (L3 AI Emergency Recovery)
   | { type: "self-heal:attempt"; tier: number; diagnosis: string; taskId?: string }
   | { type: "self-heal:success"; tier: number; action: string }
-  | { type: "self-heal:failed"; tier: number; reason: string };
+  | { type: "self-heal:failed"; tier: number; reason: string }
+  // Worker recovery events (Adaptive Learning & Recovery)
+  | { type: "worker:recovery"; taskId: string; status: RecoveryStatus; actions: string[] };
 
 // ─── Mediator Decision ───────────────────────────────────────
 export interface MediatorDecision {

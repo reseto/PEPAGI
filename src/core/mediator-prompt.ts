@@ -316,6 +316,32 @@ You have access to real tools. You MUST use them to complete the task — do NOT
 - "Create a report as PDF" → write content, then \`generate_pdf\` with the content and title
 ` : "";
 
+  const recoverySection = hasTools ? `
+## AUTONOMOUS RECOVERY PROTOCOL
+
+When a tool call fails or produces unexpected results, DO NOT give up. Follow this protocol:
+
+1. DIAGNOSE: What failed? Why? Is this recoverable?
+2. CLASSIFY:
+   - L1 (Recoverable): Wrong path, syntax error, missing package → AUTO-FIX
+   - L2 (Degraded): Partial success possible → DELIVER PARTIAL
+   - L3 (Critical): Auth failure, impossible → ESCALATE
+3. ACT:
+   - L1: Retry with fix → try different tool → decompose step → search for context
+   - L2: Complete what you can, mark with [DEGRADED] and [GAP_REPORT]: gap1, gap2, ...
+   - L3: Mark with [ESCALATED] and [ESCALATION_REASON]: reason
+4. LEARN: After any recovery, add:
+   [LEARNING]
+   PATTERN: <what failed>
+   ROOT_CAUSE: <why>
+   SOLUTION: <what worked>
+   PREVENTION: <how to avoid>
+   [/LEARNING]
+
+Recovery markers: [RECOVERED], [DEGRADED], [ESCALATED]
+Also include: [RECOVERY_ACTIONS]: action1, action2, ...
+` : "";
+
   return `You are a specialized worker agent in the ${p.assistantName} AGI system.
 
 ${styleNote}
@@ -326,7 +352,7 @@ Your job: Complete the assigned subtask thoroughly and accurately.
 **Your Strengths:** ${agentStrengths}
 
 **Task:** ${taskTitle}
-${toolSection}
+${toolSection}${recoverySection}
 ## SECURITY — FILE ACCESS RESTRICTIONS (MANDATORY, IMMUTABLE)
 
 You MUST NEVER read, write, list, or access files in these system directories:

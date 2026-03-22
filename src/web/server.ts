@@ -17,6 +17,7 @@ import {
   handleGetConfig, handlePutConfig, handleTestAgent,
   handleGetMemory, handleGetAudit, handleGetCausal, handleGetSkills,
   handleToggleAgent, handleKillAgent,
+  handleGoogleAuthStart, handleGoogleAuthStatus,
   type RestDeps,
 } from "./rest-api.js";
 
@@ -252,6 +253,14 @@ export class WebDashboardServer {
       }
       if (path === "/api/agent/kill" && req.method === "POST") {
         await handleKillAgent(deps, req, res);
+        return;
+      }
+      if (path === "/api/google/auth" && req.method === "POST") {
+        await handleGoogleAuthStart(deps, req, res);
+        return;
+      }
+      if (path === "/api/google/auth/status" && req.method === "GET") {
+        await handleGoogleAuthStatus(deps, req, res);
         return;
       }
 

@@ -22,6 +22,8 @@ import { spotifyTool } from "./spotify.js";
 import { youtubeTool } from "./youtube.js";
 import { browserTool } from "./browser.js";
 import { calendarTool } from "./calendar.js";
+import { gmailTool as fullGmailTool } from "./gmail.js";
+import { googleDriveTool } from "./google-drive.js";
 import { weatherTool } from "./weather.js";
 import { notionTool } from "./notion.js";
 import { dockerTool } from "./docker.js";
@@ -277,79 +279,74 @@ const downloadFileTool: Tool = {
   },
 };
 
-// ─── Gmail tool ───────────────────────────────────────────────
-
-const gmailTool: Tool = {
-  name: "gmail_check",
-  description: "Check Gmail for unread messages. Runs ~/.pepagi/tools/check-gmail.py if available, otherwise uses AppleScript on Mac.",
-  async execute(args, taskId, guard) {
-    const allowed = await guard.authorize(taskId, "network_external" as ActionCategory, "gmail_check");
-    if (!allowed) return { success: false, output: "", error: "Gmail access not authorized" };
-
-    const scriptPath = join(homedir(), ".pepagi", "tools", "check-gmail.py");
-    const maxResults = args.maxResults ?? "5";
-    const label = args.label ?? "INBOX";
-
-    try {
-      // Try Python script first
-      const { existsSync } = await import("node:fs");
-      if (existsSync(scriptPath)) {
-        const { stdout, stderr } = await execAsync(
-          `python3 "${scriptPath}" --max ${maxResults} --label "${label}"`,
-          { timeout: 30_000 }
-        );
-        return { success: true, output: stdout + (stderr ? `\nSTDERR: ${stderr}` : "") };
-      }
-
-      // Fallback: AppleScript on macOS to read Mail.app
-      const applescript = `
-        tell application "Mail"
-          set unreadMessages to messages of inbox whose read status is false
-          set result to ""
-          set counter to 0
-          repeat with msg in unreadMessages
-            if counter >= ${parseInt(maxResults, 10)} then exit repeat
-            set result to result & "Od: " & (sender of msg) & "\\nPředmět: " & (subject of msg) & "\\nDatum: " & (date received of msg) & "\\n---\\n"
-            set counter to counter + 1
-          end repeat
-          if result is "" then
-            return "Žádné nepřečtené zprávy."
-          end if
-          return result
-        end tell
-      `;
-      const { stdout } = await execAsync(`osascript -e '${applescript.replace(/'/g, "'\"'\"'")}'`, { timeout: 15_000 });
-      return { success: true, output: stdout.trim() || "Žádné nepřečtené zprávy." };
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      logger.warn("gmail_check failed", { error: msg, taskId });
-      return { success: false, output: "", error: `Gmail check failed: ${msg}` };
-    }
-  },
-};
-
 // ─── GitHub tool ──────────────────────────────────────────────
 
 const githubTool: Tool = {
   name: "github",
-  description: "Interact with GitHub via gh CLI. Actions: pr_list, issue_list, notifications, repo_status, pr_create.",
+  description: "Interact with GitHub via gh CLI. Actions: pr_list, issue_list, notifications, repo_status, pr_status, create_repo, create_issue, create_pr, search_code, clone.",
   async execute(args, taskId, guard) {
-    const allowed = await guard.authorize(taskId, "network_external" as ActionCategory, `github:${args.action}`);
-    if (!allowed) return { success: false, output: "", error: "GitHub access not authorized" };
-
     const action = args.action ?? "notifications";
+
+    // Security: create_pr, create_repo require git_push authorization
+    if (action === "create_pr" || action === "create_repo") {
+      const allowed = await guard.authorize(taskId, "git_push" as ActionCategory, `github:${action}`);
+      if (!allowed) return { success: false, output: "", error: `${action} not authorized (requires git_push approval)` };
+    } else {
+      const allowed = await guard.authorize(taskId, "network_external" as ActionCategory, `github:${action}`);
+      if (!allowed) return { success: false, output: "", error: "GitHub access not authorized" };
+    }
+
     const repo = args.repo ?? "";
     const limit = args.limit ?? "10";
 
-    const repoFlag = repo ? ` -R "${repo}"` : "";
+    // Sanitize shell arguments
+    const safeRepo = repo.replace(/[^a-zA-Z0-9._\-/]/g, "");
+    const safeLimit = String(Math.min(Math.max(parseInt(limit, 10) || 10, 1), 100));
+    const repoFlag = safeRepo ? ` -R "${safeRepo}"` : "";
 
     const commands: Record<string, string> = {
-      pr_list: `gh pr list${repoFlag} --limit ${limit} --json number,title,state,url,author,createdAt`,
-      issue_list: `gh issue list${repoFlag} --limit ${limit} --json number,title,state,url,author,createdAt`,
-      notifications: `gh api notifications --paginate --jq '.[:${limit}] | map({id: .id, title: .subject.title, type: .subject.type, repo: .repository.full_name, url: .subject.url, unread: .unread})'`,
+      pr_list: `gh pr list${repoFlag} --limit ${safeLimit} --json number,title,state,url,author,createdAt`,
+      issue_list: `gh issue list${repoFlag} --limit ${safeLimit} --json number,title,state,url,author,createdAt`,
+      notifications: `gh api notifications --paginate --jq '.[:${safeLimit}] | map({id: .id, title: .subject.title, type: .subject.type, repo: .repository.full_name, url: .subject.url, unread: .unread})'`,
       repo_status: `gh repo view${repoFlag} --json name,description,stargazerCount,forkCount,openIssues,url`,
       pr_status: `gh pr status${repoFlag} --json`,
     };
+
+    // Dynamic commands that need argument construction
+    if (action === "create_repo") {
+      const name = (args.name ?? "").replace(/[^a-zA-Z0-9._\-]/g, "");
+      const desc = (args.description ?? "").replace(/"/g, '\\"').slice(0, 200);
+      const visibility = args.visibility === "private" ? "--private" : "--public";
+      if (!name) return { success: false, output: "", error: "name parameter required for create_repo" };
+      commands.create_repo = `gh repo create "${name}" ${visibility} --description "${desc}" --confirm`;
+    }
+
+    if (action === "create_issue") {
+      const title = (args.title ?? "").replace(/"/g, '\\"').slice(0, 200);
+      const body = (args.body ?? "").replace(/"/g, '\\"').slice(0, 2000);
+      if (!title) return { success: false, output: "", error: "title parameter required for create_issue" };
+      commands.create_issue = `gh issue create${repoFlag} --title "${title}" --body "${body}"`;
+    }
+
+    if (action === "create_pr") {
+      const title = (args.title ?? "").replace(/"/g, '\\"').slice(0, 200);
+      const body = (args.body ?? "").replace(/"/g, '\\"').slice(0, 2000);
+      const base = (args.base ?? "main").replace(/[^a-zA-Z0-9._\-/]/g, "");
+      if (!title) return { success: false, output: "", error: "title parameter required for create_pr" };
+      commands.create_pr = `gh pr create${repoFlag} --title "${title}" --body "${body}" --base "${base}"`;
+    }
+
+    if (action === "search_code") {
+      const query = (args.query ?? "").replace(/"/g, '\\"').slice(0, 200);
+      if (!query) return { success: false, output: "", error: "query parameter required for search_code" };
+      const repoFilter = safeRepo ? ` repo:${safeRepo}` : "";
+      commands.search_code = `gh search code "${query}${repoFilter}" --limit ${safeLimit} --json path,repository,textMatches`;
+    }
+
+    if (action === "clone") {
+      if (!safeRepo) return { success: false, output: "", error: "repo parameter required for clone (owner/name)" };
+      commands.clone = `gh repo clone "${safeRepo}"`;
+    }
 
     const cmd = commands[action];
     if (!cmd) {
@@ -357,9 +354,8 @@ const githubTool: Tool = {
     }
 
     try {
-      const { stdout, stderr } = await execAsync(cmd, { timeout: 20_000 });
+      const { stdout, stderr } = await execAsync(cmd, { timeout: 30_000 });
       const output = stdout.trim();
-      // Parse JSON and re-format nicely if possible
       try {
         const parsed = JSON.parse(output);
         return { success: true, output: JSON.stringify(parsed, null, 2) };
@@ -446,7 +442,6 @@ export class ToolRegistry {
     this.register(webFetchTool);
     this.register(webSearchTool);
     this.register(downloadFileTool);
-    this.register(gmailTool);
     this.register(githubTool);
     this.register(ttsTool);
 
@@ -540,6 +535,24 @@ export class ToolRegistry {
         return executeN8nWebhook(args, config.n8n);
       },
     });
+
+    // Full Gmail tool (OAuth2 with AppleScript fallback)
+    this.register({
+      name: fullGmailTool.name,
+      description: fullGmailTool.description,
+      async execute(args: Record<string, string>, taskId: string, guard: SecurityGuard): Promise<ToolResult> {
+        return fullGmailTool.execute(args, taskId, guard as { authorize: (taskId: string, action: unknown, details: string) => Promise<boolean> });
+      },
+    });
+
+    // Google Drive tool (OAuth2)
+    this.register({
+      name: googleDriveTool.name,
+      description: googleDriveTool.description,
+      async execute(args: Record<string, string>, _taskId: string, _guard: SecurityGuard): Promise<ToolResult> {
+        return googleDriveTool.execute(args);
+      },
+    });
   }
 
   register(tool: Tool): void {
@@ -562,7 +575,7 @@ export class ToolRegistry {
     if (!tool) return { success: false, output: "", error: `Unknown tool: ${name}` };
 
     // SECURITY: SEC-06 — SSRF check for URL-accepting tools
-    if ((name === "web_fetch" || name === "browser" || name === "download_file") && args.url) {
+    if ((name === "web_fetch" || name === "browser" || name === "download_file") && args.url && !args.url.includes("googleapis.com") && !args.url.includes("accounts.google.com")) {
       const urlCheck = validateUrl(args.url);
       if (!urlCheck.valid) {
         logger.warn("ToolGuard: URL blocked", { tool: name, url: args.url, reason: urlCheck.reason, taskId });
